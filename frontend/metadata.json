@@ -1,0 +1,7 @@
+{
+  "name": "DTT AI Avatar Host",
+  "description": "A unified interface for a digital avatar host for the DTT Engagement Day, featuring real-time speech and text interaction.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

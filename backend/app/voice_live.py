@@ -64,14 +64,23 @@ class VoiceAvatarSession:
     - Session configuration with avatar settings
     - Audio input/output streaming
     - Avatar WebRTC SDP exchange
+    - Multiple interaction modes (realtime, push-to-talk, text)
     """
 
-    def __init__(self):
+    def __init__(self, mode: str = "push-to-talk"):
+        """
+        Initialize session with interaction mode.
+
+        Args:
+            mode: Interaction mode - "realtime", "push-to-talk", or "text"
+        """
+        self.mode = mode
         self.connection: Optional[VoiceLiveConnection] = None
         self.session_ready = False
         self.avatar_ice_servers: list[dict] = []
         self._event_queue: asyncio.Queue = asyncio.Queue()
         self._response_in_progress = False
+        self._pending_transcript: Optional[str] = None  # For RAG intercept
 
     def _get_credential(self) -> Union[AzureKeyCredential, TokenCredential]:
         """Get the appropriate credential based on configuration."""
@@ -87,13 +96,6 @@ class VoiceAvatarSession:
             voice_config = AzureStandardVoice(name=settings.VOICE_NAME, type="azure-standard")
         else:
             voice_config = settings.VOICE_NAME
-
-        # Turn detection (VAD) configuration
-        turn_detection = ServerVad(
-            threshold=0.5,
-            prefix_padding_ms=300,
-            silence_duration_ms=500
-        )
 
         # Avatar configuration (must match Azure VoiceLive format)
         avatar_config = {
@@ -118,20 +120,36 @@ class VoiceAvatarSession:
             language=settings.INPUT_LANGUAGES,  # e.g., "en,zh,ja" for auto-detection
         )
 
+        # Build session config with kwargs
         # Avatar enabled - requires resource in supported region
         # (Southeast Asia, West US 2, East US 2, West Europe, North Europe, Sweden Central, South Central US)
-        # Audio will be routed through WebRTC when avatar is enabled
-        return RequestSession(
-            modalities=[Modality.TEXT, Modality.AUDIO],
-            instructions=settings.ASSISTANT_INSTRUCTIONS,
-            voice=voice_config,
-            input_audio_format=InputAudioFormat.PCM16,
-            output_audio_format=OutputAudioFormat.PCM16,
-            turn_detection=turn_detection,
-            input_audio_transcription=input_transcription,
-            max_response_output_tokens=settings.MAX_RESPONSE_TOKENS,
-            avatar=avatar_config,
-        )
+        session_kwargs = {
+            "modalities": [Modality.TEXT, Modality.AUDIO],
+            "instructions": settings.ASSISTANT_INSTRUCTIONS,
+            "voice": voice_config,
+            "input_audio_format": InputAudioFormat.PCM16,
+            "output_audio_format": OutputAudioFormat.PCM16,
+            "input_audio_transcription": input_transcription,
+            "max_response_output_tokens": settings.MAX_RESPONSE_TOKENS,
+            "avatar": avatar_config,
+        }
+
+        # Turn detection (VAD) configuration
+        # Only include turn_detection for realtime mode - OMIT entirely for push-to-talk/text
+        # This is critical: passing None doesn't disable VAD, but omitting the parameter does
+        if self.mode == "realtime":
+            session_kwargs["turn_detection"] = ServerVad(
+                threshold=0.5,
+                prefix_padding_ms=300,
+                silence_duration_ms=500
+            )
+            logger.info("Mode 'realtime': ServerVad enabled for automatic turn detection")
+        else:
+            # Do NOT include turn_detection - omitting it disables server VAD
+            # This allows manual input_audio_buffer.commit for push-to-talk
+            logger.info(f"Mode '{self.mode}': turn_detection omitted for manual control")
+
+        return RequestSession(**session_kwargs)
 
     async def connect(self) -> dict:
         """
@@ -187,6 +205,113 @@ class VoiceAvatarSession:
             logger.info("Avatar connect message sent successfully")
         else:
             logger.error("Cannot send avatar SDP: no connection")
+
+    async def clear_audio_buffer(self) -> None:
+        """Clear the input audio buffer (for push-to-talk start)."""
+        if self.connection:
+            logger.info("Clearing input audio buffer")
+            await self.connection.send({"type": "input_audio_buffer.clear"})
+
+    async def commit_audio_and_respond(self) -> None:
+        """
+        Commit the audio buffer and trigger a response.
+        Used for push-to-talk mode when user releases the button.
+        """
+        if self.connection:
+            logger.info("Committing audio buffer and triggering response")
+            await self.connection.send({"type": "input_audio_buffer.commit"})
+            await self.connection.send({"type": "response.create"})
+
+    async def send_text_input(self, text: str) -> None:
+        """
+        Send a text message to the conversation.
+        Used for text chat mode.
+        """
+        if not self.connection or not text.strip():
+            return
+
+        logger.info(f"Sending text input: {text[:50]}...")
+
+        # Create a conversation item with the user's text
+        await self.connection.send({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": text}]
+            }
+        })
+
+        # Trigger a response from the assistant
+        await self.connection.send({"type": "response.create"})
+
+    async def inject_rag_response(self, response_text: str) -> None:
+        """
+        Inject a RAG-generated response for the assistant to speak.
+        This bypasses VoiceLive's built-in LLM and uses our RAG-generated text.
+        """
+        if not self.connection or not response_text.strip():
+            return
+
+        logger.info(f"Injecting RAG response: {response_text[:50]}...")
+
+        # Create an assistant message with the RAG response
+        await self.connection.send({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": response_text}]
+            }
+        })
+
+        # Trigger TTS response (avatar will speak the text)
+        await self.connection.send({"type": "response.create"})
+
+    async def set_mode(self, mode: str) -> bool:
+        """
+        Set the interaction mode and reconfigure the session.
+
+        Args:
+            mode: "realtime", "push-to-talk", or "text"
+
+        Returns:
+            True if mode was changed successfully, False otherwise
+        """
+        if mode not in ("realtime", "push-to-talk", "text"):
+            logger.warning(f"Unknown mode: {mode}, keeping current mode: {self.mode}")
+            return False
+
+        if mode == self.mode:
+            logger.info(f"Mode already set to: {mode}")
+            return True
+
+        old_mode = self.mode
+        self.mode = mode
+        logger.info(f"Interaction mode changed: {old_mode} -> {mode}")
+
+        # Reconfigure session with new VAD settings
+        if self.connection and self.session_ready:
+            try:
+                session_config = self._build_session_config()
+                await self.connection.session.update(session=session_config)
+                logger.info(f"Session reconfigured for mode: {mode}")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to reconfigure session for mode {mode}: {e}")
+                # Revert mode on failure
+                self.mode = old_mode
+                return False
+        else:
+            # Session will use new mode on next connect
+            logger.info(f"Session not ready, mode will be used on next connect")
+            return True
+
+    def get_pending_transcript(self) -> Optional[str]:
+        """Get and clear the pending user transcript for RAG processing."""
+        transcript = self._pending_transcript
+        self._pending_transcript = None
+        return transcript
 
     async def process_events(self) -> AsyncGenerator[dict, None]:
         """
@@ -386,7 +511,22 @@ class VoiceAvatarSession:
 
         # Conversation item events
         elif event_type_str == "conversation.item.created":
-            # Item created - transcript might be in here for some event types
+            # Check if item contains input audio transcript (fallback for user transcripts)
+            if hasattr(event, 'item') and event.item:
+                item = event.item
+                # Check for user role with audio content that has transcript
+                if hasattr(item, 'role') and item.role == 'user':
+                    if hasattr(item, 'content') and item.content:
+                        for content_part in item.content:
+                            if hasattr(content_part, 'transcript') and content_part.transcript:
+                                transcript = content_part.transcript.strip()
+                                if transcript:
+                                    logger.info(f"User transcript from item.created: {transcript[:50]}...")
+                                    return {
+                                        "type": "transcript",
+                                        "role": "user",
+                                        "text": transcript
+                                    }
             return None
 
         # Error events

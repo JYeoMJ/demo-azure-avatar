@@ -65,6 +65,25 @@ class Settings:
     # Maximum tokens for assistant response (about 2 sentences)
     MAX_RESPONSE_TOKENS: int = int(os.getenv("MAX_RESPONSE_TOKENS", "100"))
 
+    # RAG Configuration - Azure AI Search
+    AZURE_SEARCH_ENDPOINT: str = os.getenv("AZURE_SEARCH_ENDPOINT", "")
+    AZURE_SEARCH_KEY: str = os.getenv("AZURE_SEARCH_KEY", "")
+    AZURE_SEARCH_INDEX_NAME: str = os.getenv("AZURE_SEARCH_INDEX_NAME", "")
+    AZURE_SEARCH_VECTOR_FIELD: str = os.getenv("AZURE_SEARCH_VECTOR_FIELD", "text_vector")
+
+    # RAG Configuration - Azure OpenAI (for chat completion and embeddings)
+    AZURE_OAI_ENDPOINT: str = os.getenv("AZURE_OAI_ENDPOINT", "")
+    AZURE_OAI_KEY: str = os.getenv("AZURE_OAI_KEY", "")
+    AZURE_OAI_DEPLOYMENT: str = os.getenv("AZURE_OAI_DEPLOYMENT", "gpt-4o-mini")
+    AZURE_OAI_EMBEDDING_DEPLOYMENT: str = os.getenv("AZURE_OAI_EMBEDDING_DEPLOYMENT", "text-embedding-ada-002")
+    AZURE_OAI_API_VERSION: str = os.getenv("AZURE_OAI_API_VERSION", "2024-12-01-preview")
+
+    # Interaction mode (text, push-to-talk, realtime)
+    DEFAULT_INTERACTION_MODE: str = os.getenv("DEFAULT_INTERACTION_MODE", "push-to-talk")
+
+    # RAG enabled flag
+    RAG_ENABLED: bool = os.getenv("RAG_ENABLED", "true").lower() == "true"
+
     def validate_and_log(self):
         """Validate configuration and log important settings."""
         logger.info("=== Voice Avatar Configuration ===")
@@ -90,6 +109,22 @@ class Settings:
                 f"Model '{self.VOICELIVE_MODEL}' may not be supported for Voice Live. "
                 f"See: https://learn.microsoft.com/en-us/azure/ai-services/speech-service/regions?tabs=voice-live"
             )
+
+        # RAG configuration
+        logger.info("=== RAG Configuration ===")
+        logger.info(f"  RAG Enabled: {self.RAG_ENABLED}")
+        logger.info(f"  Default Mode: {self.DEFAULT_INTERACTION_MODE}")
+        if self.RAG_ENABLED:
+            if self.AZURE_SEARCH_ENDPOINT:
+                logger.info(f"  Search Endpoint: {self.AZURE_SEARCH_ENDPOINT}")
+                logger.info(f"  Search Index: {self.AZURE_SEARCH_INDEX_NAME}")
+            else:
+                logger.warning("  Azure Search not configured (AZURE_SEARCH_ENDPOINT missing)")
+            if self.AZURE_OAI_ENDPOINT:
+                logger.info(f"  OpenAI Endpoint: {self.AZURE_OAI_ENDPOINT}")
+                logger.info(f"  OpenAI Deployment: {self.AZURE_OAI_DEPLOYMENT}")
+            else:
+                logger.warning("  Azure OpenAI not configured (AZURE_OAI_ENDPOINT missing)")
         logger.info("===================================")
 
 

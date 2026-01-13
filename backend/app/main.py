@@ -14,6 +14,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from .voice_live import VoiceAvatarSession
+from .config import settings
 
 logging.basicConfig(
     level=logging.INFO,
@@ -69,8 +70,10 @@ async def voice_avatar_websocket(websocket: WebSocket):
     await websocket.accept()
     logger.info("WebSocket client connected")
 
-    session = VoiceAvatarSession()
+    # Create session with default interaction mode
+    session = VoiceAvatarSession(mode=settings.DEFAULT_INTERACTION_MODE)
     event_task = None
+    session_id = f"session-{id(websocket)}"  # Unique session ID for RAG memory
 
     try:
         # Connect to VoiceLive
@@ -93,7 +96,7 @@ async def voice_avatar_websocket(websocket: WebSocket):
             try:
                 data = await websocket.receive_text()
                 message = json.loads(data)
-                await handle_client_message(session, message)
+                await handle_client_message(session, message, session_id, websocket)
             except WebSocketDisconnect:
                 logger.info("WebSocket client disconnected")
                 break
@@ -123,7 +126,12 @@ async def voice_avatar_websocket(websocket: WebSocket):
         logger.info("Session cleaned up")
 
 
-async def handle_client_message(session: VoiceAvatarSession, message: dict):
+async def handle_client_message(
+    session: VoiceAvatarSession,
+    message: dict,
+    session_id: str,
+    websocket: WebSocket
+):
     """Handle messages from the WebSocket client."""
     msg_type = message.get("type")
 
@@ -147,6 +155,90 @@ async def handle_client_message(session: VoiceAvatarSession, message: dict):
             await session.send_avatar_sdp(client_sdp)
         else:
             logger.warning("Received avatar.sdp message but 'sdp' field is missing/empty")
+
+    elif msg_type == "mode.set":
+        # Set interaction mode (async with session reconfiguration)
+        mode = message.get("mode", "push-to-talk")
+        success = await session.set_mode(mode)
+        await websocket.send_json({
+            "type": "mode.changed",
+            "mode": session.mode,
+            "success": success
+        })
+
+    elif msg_type == "audio.clear":
+        # Clear audio buffer (push-to-talk start)
+        await session.clear_audio_buffer()
+
+    elif msg_type == "audio.commit":
+        # Commit audio buffer and trigger response (push-to-talk release)
+        if settings.RAG_ENABLED:
+            # For RAG mode, we'll intercept the transcript and generate RAG response
+            # The transcript will come through the event handler
+            await session.commit_audio_and_respond()
+            # Note: RAG integration for voice mode would require intercepting
+            # the transcript event and injecting RAG response - this is a TODO
+        else:
+            await session.commit_audio_and_respond()
+
+    elif msg_type == "text.input":
+        # Text input (text chat mode)
+        text = message.get("text", "").strip()
+        if text:
+            logger.info(f"Received text input: {text[:50]}...")
+
+            if settings.RAG_ENABLED:
+                # Use RAG to generate grounded response
+                try:
+                    await websocket.send_json({"type": "rag.started", "query": text})
+
+                    # Import here to avoid circular imports
+                    from .rag_service import generate_rag_response
+
+                    rag_result = await generate_rag_response(
+                        query=text,
+                        session_id=session_id,
+                        lang="en",  # TODO: detect language
+                        req_id=f"req-{id(message)}"
+                    )
+
+                    response_text = rag_result.get("response", "")
+                    sources = rag_result.get("sources", [])
+
+                    # Send RAG sources to client
+                    await websocket.send_json({
+                        "type": "rag.sources",
+                        "sources": sources
+                    })
+
+                    # Send user transcript
+                    await websocket.send_json({
+                        "type": "transcript",
+                        "role": "user",
+                        "text": text
+                    })
+
+                    # Inject RAG response for avatar to speak
+                    if response_text:
+                        await session.inject_rag_response(response_text)
+                        # Send assistant transcript
+                        await websocket.send_json({
+                            "type": "transcript",
+                            "role": "assistant",
+                            "text": response_text
+                        })
+
+                except Exception as e:
+                    logger.error(f"RAG error: {e}")
+                    await websocket.send_json({
+                        "type": "rag.error",
+                        "message": str(e)
+                    })
+                    # Fallback to non-RAG response
+                    await session.send_text_input(text)
+            else:
+                # Non-RAG mode: send directly to VoiceLive
+                await session.send_text_input(text)
 
     else:
         logger.warning(f"Unknown message type: {msg_type}")
