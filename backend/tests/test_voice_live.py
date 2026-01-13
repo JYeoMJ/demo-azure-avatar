@@ -3,8 +3,8 @@ Tests for VoiceAvatarSession class and Azure VoiceLive integration.
 """
 
 import pytest
-from unittest.mock import AsyncMock, patch
-from app.voice_live import VoiceAvatarSession, _encode_client_sdp, _decode_server_sdp
+from unittest.mock import AsyncMock, MagicMock, patch
+from app.voice_live import VoiceAvatarSession, _encode_client_sdp, _decode_server_sdp, EXPECTED_ERROR_CODES
 
 
 class TestSdpEncoding:
@@ -139,3 +139,48 @@ class TestInterruptionHandling:
         # Flag should still be reset due to try/finally
         assert session._response_in_progress is False
         assert result == {"type": "user.speaking.started"}
+
+
+class TestExpectedErrorFiltering:
+    """Tests for expected error code filtering."""
+
+    def test_expected_error_codes_defined(self):
+        """Expected error codes set should contain known harmless errors."""
+        assert "response_cancel_not_active" in EXPECTED_ERROR_CODES
+
+    @pytest.mark.asyncio
+    async def test_expected_error_filtered_not_forwarded(self):
+        """Expected error codes should return None (not forwarded to client)."""
+        session = VoiceAvatarSession()
+
+        # Simulate error event with expected code
+        mock_event = MagicMock()
+        mock_event.type = "error"
+        mock_event.error = MagicMock()
+        mock_event.error.code = "response_cancel_not_active"
+        mock_event.error.message = "Cancellation failed: no active response found."
+
+        result = await session._handle_event(mock_event)
+
+        # Expected errors should return None (filtered out)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_unexpected_error_forwarded(self):
+        """Unexpected error codes should still be forwarded to client."""
+        session = VoiceAvatarSession()
+
+        # Simulate error event with unexpected code
+        mock_event = MagicMock()
+        mock_event.type = "error"
+        mock_event.error = MagicMock()
+        mock_event.error.code = "some_real_error"
+        mock_event.error.message = "Something actually went wrong."
+
+        result = await session._handle_event(mock_event)
+
+        # Unexpected errors should be forwarded
+        assert result is not None
+        assert result["type"] == "error"
+        assert result["code"] == "some_real_error"
+        assert result["message"] == "Something actually went wrong."

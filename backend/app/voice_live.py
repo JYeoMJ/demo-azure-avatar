@@ -29,6 +29,12 @@ from .config import settings
 
 logger = logging.getLogger(__name__)
 
+# Error codes that are expected during normal operation and should not be forwarded to client
+# These typically occur due to race conditions that are inherent to real-time voice interactions
+EXPECTED_ERROR_CODES = {
+    "response_cancel_not_active",  # User interrupted after response already completed
+}
+
 
 def _encode_client_sdp(client_sdp: str) -> str:
     """Encode SDP as base64 JSON for Azure VoiceLive avatar."""
@@ -411,6 +417,12 @@ class VoiceAvatarSession:
                 elif hasattr(event.error, 'message'):
                     error_msg = event.error.message
                     error_code = event.error.code if hasattr(event.error, 'code') else 'unknown'
+
+            # Filter out expected errors that shouldn't be shown to user
+            if error_code in EXPECTED_ERROR_CODES:
+                logger.debug(f"Ignoring expected error: [{error_code}] {error_msg}")
+                return None  # Don't forward to client
+
             logger.error(f"VoiceLive error: [{error_code}] {error_msg}")
             return {"type": "error", "message": error_msg, "code": error_code}
 
