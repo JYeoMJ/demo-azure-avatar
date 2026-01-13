@@ -165,12 +165,20 @@ class VoiceAvatarSession:
 
         return {"status": "connecting"}
 
-    async def send_audio(self, audio_base64: str) -> None:
-        """Send audio data to VoiceLive."""
+    async def send_audio(self, audio_base64: str) -> bool:
+        """
+        Send audio data to VoiceLive.
+
+        Returns:
+            True if audio was sent, False if dropped (session not ready)
+        """
         if self.connection and self.session_ready:
             await self.connection.input_audio_buffer.append(audio=audio_base64)
+            return True
         elif not self.session_ready:
             logger.warning("Audio dropped: session not ready yet")
+            return False
+        return False
 
     async def send_avatar_sdp(self, client_sdp: str) -> None:
         """Send client SDP for avatar WebRTC connection."""
@@ -286,6 +294,9 @@ class VoiceAvatarSession:
                     await self.connection.response.cancel()
                 except Exception as e:
                     logger.warning(f"Failed to cancel response: {e}")
+                finally:
+                    # Always reset flag to prevent stuck state
+                    self._response_in_progress = False
             return {"type": "user.speaking.started"}
 
         elif event_type_str == "input_audio_buffer.speech_stopped":

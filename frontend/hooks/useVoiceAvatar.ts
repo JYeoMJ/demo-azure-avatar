@@ -1,6 +1,13 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import {
+  SAMPLE_RATE,
+  CHANNELS,
+  decodeBase64ToPCM16,
+  encodePCM16ToBase64,
+  createAudioBuffer,
+} from "@/lib/audio-utils";
 
 export type SessionStatus =
   | "idle"
@@ -20,6 +27,7 @@ export interface TranscriptEntry {
 interface UseVoiceAvatarOptions {
   wsUrl?: string;
   onError?: (error: string) => void;
+  maxReconnectAttempts?: number;
 }
 
 interface IceServer {
@@ -28,15 +36,85 @@ interface IceServer {
   credential?: string;
 }
 
+// WebSocket message type definitions for type safety
+interface SessionReadyMessage {
+  type: "session.ready";
+  ice_servers?: IceServer[];
+}
+
+interface AvatarSdpMessage {
+  type: "avatar.sdp";
+  server_sdp?: string;
+}
+
+interface TranscriptMessage {
+  type: "transcript";
+  role: "user" | "assistant";
+  text: string;
+}
+
+interface AudioDeltaMessage {
+  type: "audio.delta";
+  data?: string;
+}
+
+interface ErrorMessage {
+  type: "error";
+  message: string;
+  code?: string;
+}
+
+type ServerMessage =
+  | SessionReadyMessage
+  | AvatarSdpMessage
+  | TranscriptMessage
+  | AudioDeltaMessage
+  | ErrorMessage
+  | { type: string; [key: string]: unknown };
+
+// Type guards for WebSocket messages
+function isSessionReadyMessage(data: unknown): data is SessionReadyMessage {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    (data as Record<string, unknown>).type === "session.ready"
+  );
+}
+
+function isTranscriptMessage(data: unknown): data is TranscriptMessage {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    (data as Record<string, unknown>).type === "transcript" &&
+    ["user", "assistant"].includes(
+      (data as Record<string, unknown>).role as string
+    ) &&
+    typeof (data as Record<string, unknown>).text === "string"
+  );
+}
+
+function isAudioDeltaMessage(data: unknown): data is AudioDeltaMessage {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    (data as Record<string, unknown>).type === "audio.delta"
+  );
+}
+
+function isErrorMessage(data: unknown): data is ErrorMessage {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    (data as Record<string, unknown>).type === "error" &&
+    typeof (data as Record<string, unknown>).message === "string"
+  );
+}
+
 const DEFAULT_WS_URL =
   process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws/voice-avatar";
 
-// Audio configuration to match VoiceLive expectations
-const SAMPLE_RATE = 24000;
-const CHANNELS = 1;
-
 export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
-  const { wsUrl = DEFAULT_WS_URL, onError } = options;
+  const { wsUrl = DEFAULT_WS_URL, onError, maxReconnectAttempts = 5 } = options;
 
   // State
   const [status, setStatus] = useState<SessionStatus>("idle");
@@ -44,19 +122,26 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
   const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
   const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
-  const [avatarStatus, setAvatarStatus] = useState<"none" | "connecting" | "connected" | "failed">("none");
+  const [avatarStatus, setAvatarStatus] = useState<
+    "none" | "connecting" | "connected" | "failed"
+  >("none");
 
   // Refs
   const wsRef = useRef<WebSocket | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | AudioWorkletNode | null>(
+    null
+  );
   // Audio playback refs (for voice-only mode)
   const playbackContextRef = useRef<AudioContext | null>(null);
   const audioQueueRef = useRef<AudioBuffer[]>([]);
   const isPlayingRef = useRef<boolean>(false);
   const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  // Reconnection refs
+  const reconnectAttemptsRef = useRef<number>(0);
+  const shouldReconnectRef = useRef<boolean>(false);
 
   // Cleanup function
   const cleanup = useCallback(() => {
@@ -114,27 +199,15 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
     try {
       // Create playback context if needed
       if (!playbackContextRef.current) {
-        playbackContextRef.current = new AudioContext({ sampleRate: SAMPLE_RATE });
+        playbackContextRef.current = new AudioContext({
+          sampleRate: SAMPLE_RATE,
+        });
       }
       const ctx = playbackContextRef.current;
 
-      // Decode base64 to PCM16
-      const binaryString = atob(base64Data);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-
-      // Convert PCM16 to Float32
-      const pcm16 = new Int16Array(bytes.buffer);
-      const float32 = new Float32Array(pcm16.length);
-      for (let i = 0; i < pcm16.length; i++) {
-        float32[i] = pcm16[i] / 32768;
-      }
-
-      // Create audio buffer
-      const audioBuffer = ctx.createBuffer(1, float32.length, SAMPLE_RATE);
-      audioBuffer.getChannelData(0).set(float32);
+      // Use utility functions for conversion
+      const float32 = decodeBase64ToPCM16(base64Data);
+      const audioBuffer = createAudioBuffer(ctx, float32);
 
       // Queue and play
       audioQueueRef.current.push(audioBuffer);
@@ -265,10 +338,13 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
         } else {
           const checkState = () => {
             if (pc.iceGatheringState === "complete") {
+              // Clean up listener to prevent memory leak
+              pc.removeEventListener("icegatheringstatechange", checkState);
               resolve();
             }
           };
-          pc.onicegatheringstatechange = checkState;
+          // Use addEventListener instead of direct assignment to prevent overwriting
+          pc.addEventListener("icegatheringstatechange", checkState);
         }
       });
 
@@ -312,37 +388,76 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
       audioContextRef.current = audioContext;
 
       const source = audioContext.createMediaStreamSource(stream);
-      const processor = audioContext.createScriptProcessor(4096, CHANNELS, CHANNELS);
 
-      processor.onaudioprocess = (e) => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          const inputData = e.inputBuffer.getChannelData(0);
-
-          // Convert float32 to int16 PCM
-          const pcm16 = new Int16Array(inputData.length);
-          for (let i = 0; i < inputData.length; i++) {
-            const s = Math.max(-1, Math.min(1, inputData[i]));
-            pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-          }
-
-          // Convert to base64
-          const base64 = btoa(
-            String.fromCharCode(...new Uint8Array(pcm16.buffer))
-          );
-
-          // Send to backend
-          wsRef.current.send(
-            JSON.stringify({
-              type: "audio",
-              data: base64,
-            })
+      // Try to use AudioWorklet (modern API) with fallback to ScriptProcessor
+      let useWorklet = false;
+      if (audioContext.audioWorklet) {
+        try {
+          await audioContext.audioWorklet.addModule("/audio-processor.js");
+          useWorklet = true;
+          console.log("Using AudioWorklet for audio processing");
+        } catch (workletError) {
+          console.warn(
+            "AudioWorklet not available, falling back to ScriptProcessor:",
+            workletError
           );
         }
-      };
+      }
 
-      source.connect(processor);
-      processor.connect(audioContext.destination);
-      processorRef.current = processor;
+      if (useWorklet) {
+        // Modern AudioWorklet approach (better performance)
+        const workletNode = new AudioWorkletNode(audioContext, "pcm-processor");
+
+        workletNode.port.onmessage = (event: MessageEvent) => {
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            // Data comes as ArrayBuffer of Int16 values
+            const int16Buffer = new Int16Array(event.data);
+            // Convert Int16 to Float32 for encoding utility
+            const float32 = new Float32Array(int16Buffer.length);
+            for (let i = 0; i < int16Buffer.length; i++) {
+              float32[i] = int16Buffer[i] / 32768;
+            }
+            const base64 = encodePCM16ToBase64(float32);
+            wsRef.current.send(
+              JSON.stringify({
+                type: "audio",
+                data: base64,
+              })
+            );
+          }
+        };
+
+        source.connect(workletNode);
+        // AudioWorklet doesn't need to connect to destination
+        processorRef.current = workletNode;
+      } else {
+        // Fallback to deprecated ScriptProcessor for older browsers
+        console.warn(
+          "Using deprecated ScriptProcessor - consider updating browser"
+        );
+        const processor = audioContext.createScriptProcessor(
+          4096,
+          CHANNELS,
+          CHANNELS
+        );
+
+        processor.onaudioprocess = (e) => {
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            const inputData = e.inputBuffer.getChannelData(0);
+            const base64 = encodePCM16ToBase64(inputData);
+            wsRef.current.send(
+              JSON.stringify({
+                type: "audio",
+                data: base64,
+              })
+            );
+          }
+        };
+
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+        processorRef.current = processor;
+      }
 
       console.log("Audio capture started");
     } catch (error) {
@@ -435,32 +550,42 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
             break;
 
           case "audio.delta":
-            // Play audio chunk (voice-only mode)
-            if (data.data) {
+            // Play audio chunk (voice-only mode) - use type guard
+            if (isAudioDeltaMessage(data) && data.data) {
               playAudioChunk(data.data);
             }
             break;
 
+          case "audio.dropped":
+            // Audio was dropped by server (session not ready)
+            console.warn("Audio dropped:", data.reason || "unknown reason");
+            break;
+
           case "transcript":
-            setTranscripts((prev) => [
-              ...prev,
-              {
-                role: data.role as "user" | "assistant",
-                text: data.text,
-                timestamp: new Date(),
-              },
-            ]);
+            // Use type guard for safe access
+            if (isTranscriptMessage(data)) {
+              setTranscripts((prev) => [
+                ...prev,
+                {
+                  role: data.role,
+                  text: data.text,
+                  timestamp: new Date(),
+                },
+              ]);
+            }
             break;
 
           case "error":
             console.error("=== Server Error ===");
-            console.error("Message:", data.message);
-            if (data.code) {
-              console.error("Code:", data.code);
+            if (isErrorMessage(data)) {
+              console.error("Message:", data.message);
+              if (data.code) {
+                console.error("Code:", data.code);
+              }
+              onError?.(data.message);
             }
             console.error("Full error data:", data);
             console.error("====================");
-            onError?.(data.message);
             setStatus("error");
             break;
         }
@@ -471,12 +596,74 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
     [initPeerConnection, createAndSendOffer, startAudioCapture, playAudioChunk, stopAudioPlayback, onError]
   );
 
+  // Reconnect with exponential backoff
+  const reconnectWithBackoff = useCallback(async () => {
+    if (!shouldReconnectRef.current) return;
+
+    const baseDelay = 1000; // 1 second base delay
+    const attempt = reconnectAttemptsRef.current;
+
+    if (attempt >= maxReconnectAttempts) {
+      console.error(
+        `Failed to reconnect after ${maxReconnectAttempts} attempts`
+      );
+      onError?.("Failed to reconnect after multiple attempts");
+      shouldReconnectRef.current = false;
+      return;
+    }
+
+    const delay = baseDelay * Math.pow(2, attempt);
+    console.log(
+      `Reconnect attempt ${attempt + 1}/${maxReconnectAttempts} in ${delay}ms`
+    );
+    setStatus("connecting");
+
+    await new Promise((resolve) => setTimeout(resolve, delay));
+
+    if (!shouldReconnectRef.current) return;
+
+    reconnectAttemptsRef.current += 1;
+
+    try {
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log("WebSocket reconnected");
+        reconnectAttemptsRef.current = 0; // Reset on success
+        shouldReconnectRef.current = false;
+      };
+
+      ws.onmessage = handleMessage;
+
+      ws.onerror = (error) => {
+        console.error("WebSocket reconnect error:", error);
+        reconnectWithBackoff();
+      };
+
+      ws.onclose = () => {
+        console.log("WebSocket closed during reconnect");
+        if (shouldReconnectRef.current) {
+          reconnectWithBackoff();
+        } else {
+          setStatus("disconnected");
+          cleanup();
+        }
+      };
+    } catch (error) {
+      console.error("Reconnection error:", error);
+      reconnectWithBackoff();
+    }
+  }, [wsUrl, handleMessage, onError, cleanup, maxReconnectAttempts]);
+
   // Connect to voice avatar session
   const connect = useCallback(async () => {
     if (status === "connecting" || status === "connected") return;
 
     setStatus("connecting");
     setTranscripts([]);
+    reconnectAttemptsRef.current = 0;
+    shouldReconnectRef.current = true;
 
     try {
       const ws = new WebSocket(wsUrl);
@@ -484,6 +671,7 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
 
       ws.onopen = () => {
         console.log("WebSocket connected");
+        reconnectAttemptsRef.current = 0;
         // Session setup happens automatically on backend
       };
 
@@ -497,18 +685,29 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
 
       ws.onclose = () => {
         console.log("WebSocket closed");
-        setStatus("disconnected");
-        cleanup();
+        // Check shouldReconnect flag - it's set when we intend to stay connected
+        if (shouldReconnectRef.current) {
+          // Unexpected disconnect - attempt reconnection
+          console.log("Unexpected disconnect, attempting reconnection...");
+          cleanup();
+          reconnectWithBackoff();
+        } else {
+          setStatus("disconnected");
+          cleanup();
+        }
       };
     } catch (error) {
       console.error("Connection error:", error);
       onError?.("Failed to connect");
       setStatus("error");
     }
-  }, [status, wsUrl, handleMessage, onError, cleanup]);
+  }, [status, wsUrl, handleMessage, onError, cleanup, reconnectWithBackoff]);
 
   // Disconnect from session
   const disconnect = useCallback(() => {
+    // Stop any reconnection attempts
+    shouldReconnectRef.current = false;
+    reconnectAttemptsRef.current = 0;
     cleanup();
     setStatus("disconnected");
     setSpeakingState("idle");
