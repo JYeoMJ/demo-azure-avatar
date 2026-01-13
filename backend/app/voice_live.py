@@ -26,6 +26,7 @@ from azure.ai.voicelive.models import (
 )
 
 from .config import settings
+from .foundry_agent import foundry_agent
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ class VoiceAvatarSession:
     - Session configuration with avatar settings
     - Audio input/output streaming
     - Avatar WebRTC SDP exchange
+    - Turn-based vs live voice mode switching
     """
 
     def __init__(self):
@@ -78,6 +80,10 @@ class VoiceAvatarSession:
         self.avatar_ice_servers: list[dict] = []
         self._event_queue: asyncio.Queue = asyncio.Queue()
         self._response_in_progress = False
+        self._turn_based_mode = settings.TURN_BASED_MODE
+        self._base_instructions = settings.ASSISTANT_INSTRUCTIONS
+        # Initialize Foundry Agent if enabled
+        foundry_agent.initialize()
 
     def _get_credential(self) -> Union[AzureKeyCredential, TokenCredential]:
         """Get the appropriate credential based on configuration."""
@@ -95,10 +101,12 @@ class VoiceAvatarSession:
             voice_config = settings.VOICE_NAME
 
         # Turn detection (VAD) configuration
+        # In turn-based mode, disable auto-response so user must explicitly trigger
         turn_detection = ServerVad(
             threshold=0.5,
             prefix_padding_ms=300,
-            silence_duration_ms=500
+            silence_duration_ms=800 if self._turn_based_mode else 500,
+            create_response=not self._turn_based_mode,  # Disable auto-response in turn-based mode
         )
 
         # Avatar configuration (must match Azure VoiceLive format)
@@ -184,6 +192,170 @@ class VoiceAvatarSession:
         elif not self.session_ready:
             logger.warning("Audio dropped: session not ready yet")
             return False
+        return False
+
+    async def send_text_input(self, text: str) -> bool:
+        """
+        Send text input to VoiceLive as a user message.
+
+        In turn-based mode with Foundry Agent enabled:
+        - Uses Foundry Agent for full RAG+LLM response
+        - Sends the response to VoiceLive for TTS rendering
+
+        In live voice mode or without Foundry Agent:
+        - Injects context from Foundry Agent (if enabled)
+        - Lets VoiceLive generate the response
+
+        Returns:
+            True if text was sent, False if session not ready
+        """
+        if not self.connection or not self.session_ready:
+            logger.warning("Text input dropped: session not ready yet")
+            return False
+
+        try:
+            logger.info(f"Sending text input: {text[:50]}...")
+
+            # Create user message conversation item
+            await self.connection.send({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}]
+                }
+            })
+
+            # In turn-based mode with Foundry Agent, use agent for full response
+            if self._turn_based_mode and foundry_agent.enabled:
+                logger.info("Using Foundry Agent for full response generation")
+                response_text = foundry_agent.process_query(text)
+
+                if response_text:
+                    logger.info(f"Foundry Agent response: {response_text[:100]}...")
+                    # Create assistant message with the pre-generated response
+                    # VoiceLive will render this as TTS with avatar
+                    await self.connection.send({
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": response_text}]
+                        }
+                    })
+                    # Trigger response to render the assistant message as audio
+                    await self.connection.send({"type": "response.create"})
+                    return True
+                else:
+                    # Foundry Agent failed, fall back to VoiceLive's LLM
+                    logger.warning("Foundry Agent returned no response, using VoiceLive fallback")
+
+            # Default: inject context and let VoiceLive generate response
+            await self._inject_rag_context(text)
+            await self.connection.send({"type": "response.create"})
+            return True
+
+        except Exception as e:
+            logger.error(f"Error sending text input: {e}")
+            return False
+
+    async def trigger_response(self) -> bool:
+        """
+        Explicitly trigger assistant response (for turn-based mode).
+
+        In turn-based mode, the assistant doesn't auto-respond after VAD
+        detects end of speech. This method allows manual triggering.
+
+        Returns:
+            True if response was triggered, False if session not ready
+        """
+        if not self.connection or not self.session_ready:
+            logger.warning("Cannot trigger response: session not ready")
+            return False
+
+        try:
+            logger.info("Manually triggering assistant response")
+            await self.connection.send({"type": "response.create"})
+            return True
+        except Exception as e:
+            logger.error(f"Error triggering response: {e}")
+            return False
+
+    async def set_mode(self, turn_based: bool) -> bool:
+        """
+        Switch between turn-based and live voice mode at runtime.
+
+        Args:
+            turn_based: True for turn-based mode, False for live voice mode
+
+        Returns:
+            True if mode was updated, False if failed
+        """
+        if not self.connection or not self.session_ready:
+            logger.warning("Cannot set mode: session not ready")
+            return False
+
+        try:
+            self._turn_based_mode = turn_based
+            logger.info(f"Switching to {'turn-based' if turn_based else 'live voice'} mode")
+
+            # Update session turn detection configuration
+            turn_detection_config = {
+                "type": "server_vad",
+                "threshold": 0.5,
+                "prefix_padding_ms": 300,
+                "silence_duration_ms": 800 if turn_based else 500,
+                "create_response": not turn_based,
+            }
+
+            await self.connection.send({
+                "type": "session.update",
+                "session": {"turn_detection": turn_detection_config}
+            })
+            return True
+        except Exception as e:
+            logger.error(f"Error setting mode: {e}")
+            return False
+
+    @property
+    def is_turn_based_mode(self) -> bool:
+        """Return current mode setting."""
+        return self._turn_based_mode
+
+    async def _inject_rag_context(self, query: str) -> bool:
+        """
+        Retrieve relevant context from Foundry Agent and inject into session instructions.
+
+        Args:
+            query: The user's query (transcribed speech or text input)
+
+        Returns:
+            True if context was injected, False otherwise
+        """
+        if not foundry_agent.enabled:
+            return False
+
+        try:
+            # Retrieve context from Foundry Agent's knowledge base
+            context = foundry_agent.get_context(query)
+            if not context:
+                logger.debug("No relevant context found from Foundry Agent")
+                return False
+
+            augmented_instructions = f"{self._base_instructions}\n\n{context}"
+            logger.info(f"Injecting Foundry Agent context ({len(context)} chars)")
+
+            # Update session with augmented instructions
+            if self.connection and self.session_ready:
+                await self.connection.send({
+                    "type": "session.update",
+                    "session": {"instructions": augmented_instructions}
+                })
+                return True
+
+        except Exception as e:
+            logger.error(f"Error injecting Foundry Agent context: {e}")
+
         return False
 
     async def send_avatar_sdp(self, client_sdp: str) -> None:
@@ -322,6 +494,8 @@ class VoiceAvatarSession:
             logger.info(f"User transcript: {transcript}")
             if transcript and transcript.strip():
                 logger.info(f"Sending user transcript to client: {transcript[:50]}...")
+                # Inject RAG context before response generation
+                await self._inject_rag_context(transcript)
                 return {
                     "type": "transcript",
                     "role": "user",

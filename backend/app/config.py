@@ -65,6 +65,19 @@ class Settings:
     # Maximum tokens for assistant response (about 2 sentences)
     MAX_RESPONSE_TOKENS: int = int(os.getenv("MAX_RESPONSE_TOKENS", "100"))
 
+    # Turn-based mode: when true, auto-response is disabled and user must explicitly trigger response
+    # In live voice mode (false), VAD automatically triggers assistant response after user stops speaking
+    TURN_BASED_MODE: bool = os.getenv("TURN_BASED_MODE", "false").lower() == "true"
+
+    # Azure AI Foundry Agent Configuration
+    # Enable Foundry Agent for RAG-augmented responses
+    FOUNDRY_AGENT_ENABLED: bool = os.getenv("FOUNDRY_AGENT_ENABLED", "false").lower() == "true"
+    # Full AI Foundry project endpoint (required if enabled)
+    # Format: https://<instance>.services.ai.azure.com/api/projects/<project-name>
+    FOUNDRY_ENDPOINT: str = os.getenv("FOUNDRY_ENDPOINT", "")
+    # Pre-created agent ID (required if enabled)
+    FOUNDRY_AGENT_ID: str = os.getenv("FOUNDRY_AGENT_ID", "")
+
     def validate_and_log(self):
         """Validate configuration and log important settings."""
         logger.info("=== Voice Avatar Configuration ===")

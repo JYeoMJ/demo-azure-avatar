@@ -17,10 +17,12 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from .voice_live import VoiceAvatarSession
+from .foundry_agent import foundry_agent
 
 # Input validation constants
 MAX_AUDIO_CHUNK_SIZE = 100 * 1024  # 100KB max for audio chunks
 MAX_SDP_SIZE = 10 * 1024  # 10KB max for SDP
+MAX_TEXT_INPUT_SIZE = 4096  # 4KB max for text input
 
 
 class RateLimiter:
@@ -65,12 +67,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Suppress verbose HTTP library logging (response headers, etc.)
+logging.getLogger("azure").setLevel(logging.WARNING)
+logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
+logging.getLogger("aiohttp").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     logger.info("Voice Avatar backend starting...")
+
+    # Initialize Foundry Agent for RAG (if enabled)
+    if foundry_agent.initialize():
+        logger.info(f"Foundry Agent initialized (agent_id: {foundry_agent.agent_id})")
+    else:
+        logger.info("Foundry Agent not enabled or initialization failed")
+
     yield
+
+    # Cleanup
+    foundry_agent.cleanup()
     logger.info("Voice Avatar backend shutting down...")
 
 
@@ -137,7 +155,9 @@ async def voice_avatar_websocket(websocket: WebSocket):
         # Handle incoming messages from client
         while True:
             try:
-                # Rate limiting
+                data = await websocket.receive_text()
+
+                # Rate limiting - check AFTER receiving the message
                 if not rate_limiter.allow():
                     logger.warning("Rate limit exceeded for client")
                     await websocket.send_json({
@@ -147,7 +167,6 @@ async def voice_avatar_websocket(websocket: WebSocket):
                     })
                     continue
 
-                data = await websocket.receive_text()
                 message = json.loads(data)
                 audio_chunk_count = await handle_client_message(
                     session, message, websocket, audio_chunk_count
@@ -252,6 +271,58 @@ async def handle_client_message(
             await session.send_avatar_sdp(client_sdp)
         else:
             logger.warning("Received avatar.sdp message but 'sdp' field is missing/empty")
+
+    elif msg_type == "text.input":
+        # Text input from client
+        text_content = message.get("text", "").strip()
+        if text_content:
+            # Validate text length
+            if len(text_content) > MAX_TEXT_INPUT_SIZE:
+                logger.warning(f"Text input exceeds maximum size: {len(text_content)} > {MAX_TEXT_INPUT_SIZE}")
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Text input exceeds maximum allowed size",
+                    "code": "text_too_long"
+                })
+                return audio_chunk_count
+
+            logger.info(f"Received text input (length: {len(text_content)} chars)")
+            text_sent = await session.send_text_input(text_content)
+            if not text_sent:
+                await websocket.send_json({
+                    "type": "text.dropped",
+                    "reason": "session_not_ready"
+                })
+        else:
+            logger.warning("Received text.input message but 'text' field is missing/empty")
+
+    elif msg_type == "response.trigger":
+        # Manually trigger assistant response (for turn-based mode)
+        logger.info("Received response.trigger request")
+        triggered = await session.trigger_response()
+        if not triggered:
+            await websocket.send_json({
+                "type": "error",
+                "message": "Failed to trigger response",
+                "code": "trigger_failed"
+            })
+
+    elif msg_type == "mode.set":
+        # Switch between turn-based and live voice mode
+        turn_based = message.get("turn_based", False)
+        logger.info(f"Received mode.set request: turn_based={turn_based}")
+        success = await session.set_mode(turn_based)
+        if success:
+            await websocket.send_json({
+                "type": "mode.updated",
+                "turn_based": turn_based
+            })
+        else:
+            await websocket.send_json({
+                "type": "error",
+                "message": "Failed to update mode",
+                "code": "mode_update_failed"
+            })
 
     else:
         logger.warning(f"Unknown message type: {msg_type}")

@@ -125,6 +125,7 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
   const [avatarStatus, setAvatarStatus] = useState<
     "none" | "connecting" | "connected" | "failed"
   >("none");
+  const [turnBasedMode, setTurnBasedMode] = useState(false);
 
   // Refs
   const wsRef = useRef<WebSocket | null>(null);
@@ -142,6 +143,8 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
   // Reconnection refs
   const reconnectAttemptsRef = useRef<number>(0);
   const shouldReconnectRef = useRef<boolean>(false);
+  // Track avatar SDP negotiation to prevent duplicates
+  const avatarSdpSentRef = useRef<boolean>(false);
 
   // Cleanup function
   const cleanup = useCallback(() => {
@@ -192,6 +195,8 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
 
     setVideoStream(null);
     setAudioStream(null);
+    // Reset avatar SDP tracking
+    avatarSdpSentRef.current = false;
   }, []);
 
   // Play audio from base64 PCM16 data (voice-only mode)
@@ -478,13 +483,24 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
             console.log("=== Session Ready ===");
             setStatus("connected");
             // Start capturing audio immediately (voice-only mode)
-            await startAudioCapture();
+            // Only start if not already capturing
+            if (!audioContextRef.current) {
+              await startAudioCapture();
+            } else {
+              console.log("Audio capture already active, skipping");
+            }
             // Only setup WebRTC if ICE servers provided (for avatar mode)
+            // and if we haven't already sent an SDP offer
             if (data.ice_servers && data.ice_servers.length > 0) {
-              console.log("ICE servers from Azure:", JSON.stringify(data.ice_servers, null, 2));
-              setAvatarStatus("connecting");
-              const pc = initPeerConnection(data.ice_servers);
-              await createAndSendOffer(pc);
+              if (avatarSdpSentRef.current) {
+                console.log("SDP already sent, skipping duplicate WebRTC setup");
+              } else {
+                console.log("ICE servers from Azure:", JSON.stringify(data.ice_servers, null, 2));
+                setAvatarStatus("connecting");
+                avatarSdpSentRef.current = true;
+                const pc = initPeerConnection(data.ice_servers);
+                await createAndSendOffer(pc);
+              }
             } else {
               console.log("No ICE servers - running in voice-only mode");
               setAvatarStatus("none");
@@ -573,6 +589,13 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
                 },
               ]);
             }
+            break;
+
+          case "mode.updated":
+            // Mode switch confirmed by server
+            const newTurnBased = data.turn_based === true;
+            setTurnBasedMode(newTurnBased);
+            console.log(`Mode confirmed: ${newTurnBased ? "turn-based" : "live voice"}`);
             break;
 
           case "error":
@@ -664,6 +687,7 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
     setTranscripts([]);
     reconnectAttemptsRef.current = 0;
     shouldReconnectRef.current = true;
+    avatarSdpSentRef.current = false;
 
     try {
       const ws = new WebSocket(wsUrl);
@@ -703,6 +727,63 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
     }
   }, [status, wsUrl, handleMessage, onError, cleanup, reconnectWithBackoff]);
 
+  // Send text message to assistant
+  const sendTextMessage = useCallback((text: string) => {
+    const trimmedText = text.trim();
+    if (!trimmedText) return;
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      // Add to transcripts immediately for responsive UI
+      setTranscripts((prev) => [
+        ...prev,
+        {
+          role: "user",
+          text: trimmedText,
+          timestamp: new Date(),
+        },
+      ]);
+      // Send to backend
+      wsRef.current.send(
+        JSON.stringify({
+          type: "text.input",
+          text: trimmedText,
+        })
+      );
+      console.log("Text message sent:", trimmedText.substring(0, 50));
+    } else {
+      console.warn("Cannot send text: WebSocket not open");
+      onError?.("Cannot send message: not connected");
+    }
+  }, [onError]);
+
+  // Trigger assistant response (for turn-based mode)
+  const triggerResponse = useCallback(() => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "response.trigger" }));
+      console.log("Response trigger sent");
+    } else {
+      console.warn("Cannot trigger response: WebSocket not open");
+    }
+  }, []);
+
+  // Toggle between turn-based and live voice mode
+  const toggleMode = useCallback((turnBased: boolean) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: "mode.set",
+          turn_based: turnBased,
+        })
+      );
+      // Optimistically update local state
+      setTurnBasedMode(turnBased);
+      console.log(`Mode toggle sent: ${turnBased ? "turn-based" : "live voice"}`);
+    } else {
+      console.warn("Cannot toggle mode: WebSocket not open");
+      onError?.("Cannot change mode: not connected");
+    }
+  }, [onError]);
+
   // Disconnect from session
   const disconnect = useCallback(() => {
     // Stop any reconnection attempts
@@ -728,7 +809,11 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
     videoStream,
     audioStream,
     avatarStatus,
+    turnBasedMode,
     connect,
     disconnect,
+    sendTextMessage,
+    triggerResponse,
+    toggleMode,
   };
 }
