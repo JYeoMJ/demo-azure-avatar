@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import {
   useVoiceAvatar,
   SessionStatus,
@@ -79,16 +79,22 @@ function SpeakingIndicator({ state }: { state: SpeakingState }) {
   );
 }
 
-function TranscriptPanel({ transcripts }: { transcripts: TranscriptEntry[] }) {
+function TranscriptPanel({
+  transcripts,
+  streamingTranscript,
+}: {
+  transcripts: TranscriptEntry[];
+  streamingTranscript: string;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [transcripts]);
+  }, [transcripts, streamingTranscript]);
 
-  if (transcripts.length === 0) {
+  if (transcripts.length === 0 && !streamingTranscript) {
     return (
       <div className="h-full flex flex-col items-center justify-center text-gray-400 p-8">
         <svg
@@ -130,6 +136,15 @@ function TranscriptPanel({ transcripts }: { transcripts: TranscriptEntry[] }) {
           </div>
         </div>
       ))}
+      {/* Streaming transcript - shown while assistant is speaking */}
+      {streamingTranscript && (
+        <div className="flex justify-start">
+          <div className="max-w-[80%] px-4 py-2.5 rounded-2xl bg-gray-100 text-gray-800 border-l-2 border-blue-400">
+            <p className="text-sm leading-relaxed">{streamingTranscript}</p>
+            <span className="inline-block w-1.5 h-4 bg-blue-400 animate-pulse ml-0.5 align-middle" />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -139,36 +154,18 @@ export default function VoiceAvatar() {
     status,
     speakingState,
     transcripts,
+    streamingTranscript,
     videoStream,
     audioStream,
     avatarStatus,
-    turnBasedMode,
     connect,
     disconnect,
-    sendTextMessage,
-    triggerResponse,
-    toggleMode,
   } = useVoiceAvatar({
     onError: (error) => console.error("Voice Avatar error:", error),
   });
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
-  const [textInput, setTextInput] = useState("");
-
-  const handleSendText = () => {
-    if (textInput.trim() && status === "connected") {
-      sendTextMessage(textInput);
-      setTextInput("");
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSendText();
-    }
-  };
 
   // Attach video stream
   useEffect(() => {
@@ -279,25 +276,9 @@ export default function VoiceAvatar() {
             </div>
 
             {isConnected && (
-              <div className="flex flex-col gap-2">
-                <p className="text-sm text-gray-500 text-center">
-                  {turnBasedMode
-                    ? "Type a message or speak, then send to get a response"
-                    : "Speak naturally - the avatar will respond automatically"}
-                </p>
-                {/* Send button for turn-based voice mode */}
-                {turnBasedMode && speakingState === "idle" && (
-                  <button
-                    onClick={triggerResponse}
-                    className="py-2 px-4 bg-green-600 hover:bg-green-700 text-white font-medium
-                               rounded-xl transition-colors text-sm
-                               focus:outline-none focus:ring-2 focus:ring-green-500"
-                    aria-label="Send voice message and get response"
-                  >
-                    Send Voice Message
-                  </button>
-                )}
-              </div>
+              <p className="text-sm text-gray-500 text-center">
+                Speak naturally - the avatar will respond automatically
+              </p>
             )}
           </div>
         </div>
@@ -305,41 +286,11 @@ export default function VoiceAvatar() {
 
       {/* Conversation Panel */}
       <div className="w-full lg:w-[400px] bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden flex flex-col h-[600px]">
-        {/* Header with Mode Toggle */}
-        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+        {/* Header */}
+        <div className="px-5 py-4 border-b border-gray-100">
           <h2 id="transcript-heading" className="text-lg font-semibold text-gray-900">
             Conversation
           </h2>
-          {/* Mode Toggle */}
-          {isConnected && (
-            <div className="flex bg-gray-100 rounded-lg p-1" role="tablist" aria-label="Conversation mode">
-              <button
-                role="tab"
-                aria-selected={turnBasedMode}
-                onClick={() => toggleMode(true)}
-                className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                  turnBasedMode
-                    ? "bg-blue-600 text-white shadow-sm"
-                    : "text-gray-600 hover:text-gray-900"
-                }`}
-              >
-                Text Chat
-              </button>
-              <button
-                role="tab"
-                aria-selected={!turnBasedMode}
-                onClick={() => toggleMode(false)}
-                className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors flex items-center gap-1.5 ${
-                  !turnBasedMode
-                    ? "bg-blue-600 text-white shadow-sm"
-                    : "text-gray-600 hover:text-gray-900"
-                }`}
-              >
-                <span className={`w-2 h-2 rounded-full ${!turnBasedMode ? "bg-green-400" : "bg-gray-400"}`} />
-                Live Voice
-              </button>
-            </div>
-          )}
         </div>
 
         {/* Transcript */}
@@ -349,50 +300,8 @@ export default function VoiceAvatar() {
           aria-labelledby="transcript-heading"
           aria-live="polite"
         >
-          <TranscriptPanel transcripts={transcripts} />
+          <TranscriptPanel transcripts={transcripts} streamingTranscript={streamingTranscript} />
         </div>
-
-        {/* Text Input */}
-        {isConnected && (
-          <div className="p-4 border-t border-gray-100">
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={textInput}
-                onChange={(e) => setTextInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Ask me about..."
-                className="flex-1 px-4 py-2.5 bg-gray-50 text-gray-900 placeholder-gray-400
-                           rounded-xl border border-gray-200 focus:border-blue-500
-                           focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                aria-label="Type a message to send"
-              />
-              <button
-                onClick={handleSendText}
-                disabled={!textInput.trim()}
-                className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-200
-                           disabled:cursor-not-allowed text-white rounded-xl transition-colors
-                           focus:outline-none focus:ring-2 focus:ring-blue-500"
-                aria-label="Send message"
-              >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                  aria-hidden="true"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M5 12h14M12 5l7 7-7 7"
-                  />
-                </svg>
-              </button>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

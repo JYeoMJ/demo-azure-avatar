@@ -537,9 +537,17 @@ class VoiceAvatarSession:
             logger.info("Assistant audio done")
             return {"type": "assistant.speaking.done"}
 
-        # Transcript events - Assistant response
+        # Transcript events - Assistant response (streaming)
         elif event_type_str == "response.audio_transcript.delta":
-            # Incremental transcript updates - don't send individually
+            # Forward incremental transcript updates for real-time display
+            delta = getattr(event, 'delta', None)
+            if delta:
+                logger.debug(f"Transcript delta: {delta}")
+                return {
+                    "type": "transcript.delta",
+                    "role": "assistant",
+                    "delta": delta
+                }
             return None
 
         elif event_type_str == "response.audio_transcript.done":

@@ -53,6 +53,12 @@ interface TranscriptMessage {
   text: string;
 }
 
+interface TranscriptDeltaMessage {
+  type: "transcript.delta";
+  role: "assistant";
+  delta: string;
+}
+
 interface AudioDeltaMessage {
   type: "audio.delta";
   data?: string;
@@ -68,6 +74,7 @@ type ServerMessage =
   | SessionReadyMessage
   | AvatarSdpMessage
   | TranscriptMessage
+  | TranscriptDeltaMessage
   | AudioDeltaMessage
   | ErrorMessage
   | { type: string; [key: string]: unknown };
@@ -90,6 +97,15 @@ function isTranscriptMessage(data: unknown): data is TranscriptMessage {
       (data as Record<string, unknown>).role as string
     ) &&
     typeof (data as Record<string, unknown>).text === "string"
+  );
+}
+
+function isTranscriptDeltaMessage(data: unknown): data is TranscriptDeltaMessage {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    (data as Record<string, unknown>).type === "transcript.delta" &&
+    typeof (data as Record<string, unknown>).delta === "string"
   );
 }
 
@@ -120,6 +136,7 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
   const [status, setStatus] = useState<SessionStatus>("idle");
   const [speakingState, setSpeakingState] = useState<SpeakingState>("idle");
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
+  const [streamingTranscript, setStreamingTranscript] = useState<string>("");
   const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
   const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
   const [avatarStatus, setAvatarStatus] = useState<
@@ -548,6 +565,8 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
           case "user.speaking.started":
             // Stop any ongoing assistant audio playback (interruption)
             stopAudioPlayback();
+            // Reset streaming transcript on interruption
+            setStreamingTranscript("");
             setSpeakingState("user");
             break;
 
@@ -577,17 +596,39 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
             console.warn("Audio dropped:", data.reason || "unknown reason");
             break;
 
+          case "transcript.delta":
+            // Streaming transcript - display word-by-word as it arrives
+            if (isTranscriptDeltaMessage(data)) {
+              setStreamingTranscript((prev) => prev + data.delta);
+            }
+            break;
+
           case "transcript":
             // Use type guard for safe access
             if (isTranscriptMessage(data)) {
-              setTranscripts((prev) => [
-                ...prev,
-                {
-                  role: data.role,
-                  text: data.text,
-                  timestamp: new Date(),
-                },
-              ]);
+              if (data.role === "assistant") {
+                // Finalize assistant transcript - use the authoritative text from server
+                // Reset streaming state and add the final transcript
+                setStreamingTranscript("");
+                setTranscripts((prev) => [
+                  ...prev,
+                  {
+                    role: "assistant",
+                    text: data.text,
+                    timestamp: new Date(),
+                  },
+                ]);
+              } else {
+                // User transcript - add directly
+                setTranscripts((prev) => [
+                  ...prev,
+                  {
+                    role: data.role,
+                    text: data.text,
+                    timestamp: new Date(),
+                  },
+                ]);
+              }
             }
             break;
 
@@ -685,6 +726,7 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
 
     setStatus("connecting");
     setTranscripts([]);
+    setStreamingTranscript("");
     reconnectAttemptsRef.current = 0;
     shouldReconnectRef.current = true;
     avatarSdpSentRef.current = false;
@@ -793,6 +835,7 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
     setStatus("disconnected");
     setSpeakingState("idle");
     setAvatarStatus("none");
+    setStreamingTranscript("");
   }, [cleanup]);
 
   // Cleanup on unmount
@@ -806,6 +849,7 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
     status,
     speakingState,
     transcripts,
+    streamingTranscript,
     videoStream,
     audioStream,
     avatarStatus,
