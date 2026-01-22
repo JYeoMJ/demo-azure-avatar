@@ -104,6 +104,7 @@ class FoundryAgentService:
             logger.warning("Cannot process query: agent not initialized")
             return None
 
+        thread = None
         try:
             # Create a new thread
             thread = self._client.threads.create()
@@ -145,6 +146,14 @@ class FoundryAgentService:
         except Exception as e:
             logger.error(f"Error processing query: {e}")
             return None
+        finally:
+            # Always delete the thread to prevent resource accumulation
+            if thread and self._client:
+                try:
+                    self._client.threads.delete(thread.id)
+                    logger.debug(f"Deleted thread: {thread.id}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete thread {thread.id}: {e}")
 
     def get_context(self, query: str) -> Optional[str]:
         """
@@ -163,6 +172,7 @@ class FoundryAgentService:
         if not self._client or not self._agent:
             return None
 
+        thread = None
         try:
             # Use the agent to search and return context
             context_query = f"Based on the knowledge base, what information is relevant to this question (provide key facts only, no full answer): {query}"
@@ -199,6 +209,14 @@ class FoundryAgentService:
         except Exception as e:
             logger.error(f"Error getting context: {e}")
             return None
+        finally:
+            # Always delete the thread to prevent resource accumulation
+            if thread and self._client:
+                try:
+                    self._client.threads.delete(thread.id)
+                    logger.debug(f"Deleted thread: {thread.id}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete thread {thread.id}: {e}")
 
     def cleanup(self) -> None:
         """Clean up resources (call on shutdown if needed)."""

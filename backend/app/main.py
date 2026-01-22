@@ -23,6 +23,7 @@ from .foundry_agent import foundry_agent
 MAX_AUDIO_CHUNK_SIZE = 100 * 1024  # 100KB max for audio chunks
 MAX_SDP_SIZE = 10 * 1024  # 10KB max for SDP
 MAX_TEXT_INPUT_SIZE = 4096  # 4KB max for text input
+WEBSOCKET_IDLE_TIMEOUT = 60.0  # 60 seconds idle timeout for client messages
 
 
 class RateLimiter:
@@ -66,6 +67,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Track active sessions for monitoring
+active_sessions: set[int] = set()
 
 # Suppress verbose HTTP library logging (response headers, etc.)
 logging.getLogger("azure").setLevel(logging.WARNING)
@@ -115,6 +119,15 @@ async def health_check():
     return {"status": "healthy"}
 
 
+@app.get("/connections")
+async def get_connections():
+    """Get count of active VoiceLive connections."""
+    return {
+        "active_sessions": len(active_sessions),
+        "session_ids": list(active_sessions)
+    }
+
+
 @app.websocket("/ws/voice-avatar")
 async def voice_avatar_websocket(websocket: WebSocket):
     """
@@ -129,7 +142,9 @@ async def voice_avatar_websocket(websocket: WebSocket):
     - Server forwards VoiceLive events (transcripts, status updates)
     """
     await websocket.accept()
-    logger.info("WebSocket client connected")
+    session_id = id(websocket)
+    active_sessions.add(session_id)
+    logger.info(f"WebSocket client connected (session={session_id}, active={len(active_sessions)})")
 
     session = VoiceAvatarSession()
     event_task = None
@@ -155,7 +170,11 @@ async def voice_avatar_websocket(websocket: WebSocket):
         # Handle incoming messages from client
         while True:
             try:
-                data = await websocket.receive_text()
+                # Add idle timeout to detect stale clients and prevent leaked Azure connections
+                data = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=WEBSOCKET_IDLE_TIMEOUT
+                )
 
                 # Rate limiting - check AFTER receiving the message
                 if not rate_limiter.allow():
@@ -171,6 +190,17 @@ async def voice_avatar_websocket(websocket: WebSocket):
                 audio_chunk_count = await handle_client_message(
                     session, message, websocket, audio_chunk_count
                 )
+            except asyncio.TimeoutError:
+                logger.info(f"WebSocket idle timeout ({WEBSOCKET_IDLE_TIMEOUT}s) - closing connection")
+                try:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Connection timed out due to inactivity",
+                        "code": "idle_timeout"
+                    })
+                except Exception:
+                    pass
+                break
             except WebSocketDisconnect:
                 logger.info("WebSocket client disconnected")
                 break
@@ -202,7 +232,8 @@ async def voice_avatar_websocket(websocket: WebSocket):
                 pass
 
         await session.disconnect()
-        logger.info("Session cleaned up")
+        active_sessions.discard(session_id)
+        logger.info(f"Session cleaned up (session={session_id}, remaining={len(active_sessions)})")
 
 
 async def handle_client_message(

@@ -717,6 +717,7 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
 
       ws.onerror = (error) => {
         console.error("WebSocket reconnect error:", error);
+        cleanup();
         reconnectWithBackoff();
       };
 
@@ -762,6 +763,8 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
         console.error("WebSocket error:", error);
         onError?.("WebSocket connection failed");
         setStatus("error");
+        // Cleanup resources on error to prevent leaks
+        cleanup();
       };
 
       ws.onclose = () => {
@@ -880,9 +883,26 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
     setStreamingTranscript("");
   }, [cleanup]);
 
-  // Cleanup on unmount
+  // Cleanup on unmount and browser close
   useEffect(() => {
+    // Handle browser/tab close to ensure connections are cleaned up
+    const handleBeforeUnload = () => {
+      // Use synchronous close - beforeunload doesn't wait for async
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+      if (peerConnectionRef.current) {
+        peerConnectionRef.current.close();
+      }
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
     return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
       cleanup();
     };
   }, [cleanup]);

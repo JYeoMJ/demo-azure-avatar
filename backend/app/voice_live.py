@@ -101,12 +101,14 @@ class VoiceAvatarSession:
 
     def __init__(self):
         self.connection: Optional[VoiceLiveConnection] = None
+        self._connection_cm = None  # Store context manager for proper cleanup
         self.session_ready = False
         self.avatar_ice_servers: list[dict] = []
         self._event_queue: asyncio.Queue = asyncio.Queue()
         self._response_in_progress = False
         self._turn_based_mode = settings.TURN_BASED_MODE
         self._base_instructions = settings.ASSISTANT_INSTRUCTIONS
+        self._background_tasks: set[asyncio.Task] = set()  # Track background tasks
         # Initialize Foundry Agent if enabled
         foundry_agent.initialize()
 
@@ -193,7 +195,8 @@ class VoiceAvatarSession:
 
         credential = self._get_credential()
 
-        self.connection = await connect(
+        # Store context manager for proper cleanup in disconnect()
+        self._connection_cm = connect(
             endpoint=settings.VOICELIVE_ENDPOINT,
             credential=credential,
             model=settings.VOICELIVE_MODEL,
@@ -202,7 +205,8 @@ class VoiceAvatarSession:
                 "heartbeat": 20,
                 "timeout": 20,
             },
-        ).__aenter__()
+        )
+        self.connection = await self._connection_cm.__aenter__()
 
         # Configure session with avatar
         session_config = self._build_session_config()
@@ -387,6 +391,11 @@ class VoiceAvatarSession:
         except Exception as e:
             logger.error(f"Background RAG injection failed: {e}")
 
+    def _track_task(self, task: asyncio.Task) -> None:
+        """Track a background task and clean up when done."""
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
     async def _inject_rag_context(self, query: str) -> bool:
         """
         Fire-and-forget RAG context injection - doesn't block event processing.
@@ -400,8 +409,9 @@ class VoiceAvatarSession:
         if not foundry_agent.enabled:
             return False
 
-        # Fire and forget - don't await, let it run in background
-        asyncio.create_task(self._inject_rag_context_background(query))
+        # Fire and forget - but track for cleanup on disconnect
+        task = asyncio.create_task(self._inject_rag_context_background(query))
+        self._track_task(task)
         return True
 
     async def _cancel_response_async(self) -> None:
@@ -523,8 +533,9 @@ class VoiceAvatarSession:
             # If assistant is responding, cancel to allow interruption (fire-and-forget)
             if self._response_in_progress and self.connection:
                 logger.info("Cancelling in-progress response (user interruption)")
-                # Fire and forget - don't block event stream waiting for cancel
-                asyncio.create_task(self._cancel_response_async())
+                # Fire and forget - but track for cleanup on disconnect
+                task = asyncio.create_task(self._cancel_response_async())
+                self._track_task(task)
                 # Immediately mark as cancelled for responsive UI
                 self._response_in_progress = False
             return {"type": "user.speaking.started"}
@@ -675,13 +686,30 @@ class VoiceAvatarSession:
 
     async def disconnect(self) -> None:
         """Disconnect from VoiceLive."""
-        if self.connection:
+        # Cancel all tracked background tasks
+        for task in list(self._background_tasks):
+            if not task.done():
+                task.cancel()
+        # Wait for all tasks to complete cancellation
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        self._background_tasks.clear()
+
+        # Properly exit the connection context manager
+        if self._connection_cm:
             try:
-                # Try close() method first, fallback to other cleanup
+                await self._connection_cm.__aexit__(None, None, None)
+            except Exception as e:
+                logger.error(f"Error exiting connection context: {e}")
+            finally:
+                self._connection_cm = None
+                self.connection = None
+                self.session_ready = False
+        elif self.connection:
+            # Fallback if connection was created without context manager
+            try:
                 if hasattr(self.connection, 'close'):
                     await self.connection.close()
-                elif hasattr(self.connection, 'disconnect'):
-                    await self.connection.disconnect()
             except Exception as e:
                 logger.error(f"Error disconnecting: {e}")
             finally:
