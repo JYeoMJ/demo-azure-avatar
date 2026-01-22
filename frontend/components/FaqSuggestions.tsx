@@ -17,9 +17,9 @@ const FAQ_QUESTIONS = [
 
 export default function FaqSuggestions({ onSelect }: FaqSuggestionsProps) {
   return (
-    <div className="mt-4 pt-4 border-t border-gray-200/50">
-      <p className="text-xs text-gray-500 mb-3">Suggested questions:</p>
-      <div className="flex flex-wrap gap-2">
+    <div className="text-center">
+      <p className="text-xs text-gray-500 mb-2">Suggested questions:</p>
+      <div className="flex flex-wrap gap-2 justify-center">
         {FAQ_QUESTIONS.map((question) => (
           <button
             key={question}

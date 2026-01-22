@@ -36,7 +36,6 @@ const ChatPanel = memo(function ChatPanel({
     };
   }, [transcripts, streamingTranscript]);
 
-  const showFaq = transcripts.length <= 3 && !streamingTranscript;
   const isEmpty = transcripts.length === 0 && !streamingTranscript;
 
   return (
@@ -98,11 +97,11 @@ const ChatPanel = memo(function ChatPanel({
             </div>
           </div>
         )}
+      </div>
 
-        {/* FAQ suggestions */}
-        {showFaq && (
-          <FaqSuggestions onSelect={onSendMessage} />
-        )}
+      {/* FAQ suggestions - fixed at bottom */}
+      <div className="px-4 py-3 border-t border-gray-200/50 bg-white/30">
+        <FaqSuggestions onSelect={onSendMessage} />
       </div>
     </div>
   );
