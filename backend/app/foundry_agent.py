@@ -233,6 +233,8 @@ class FoundryAgentService:
             else:
                 context_query = f"Based on the knowledge base, what information is relevant to this question (provide key facts only, no full answer): {query}"
 
+            logger.debug(f"Context retrieval query (thread={thread_id or 'new'}):\n{context_query}")
+
             # Use existing thread or create new one
             if session_based:
                 active_thread_id = thread_id
@@ -253,13 +255,14 @@ class FoundryAgentService:
                 return None
 
             messages = self._client.messages.list(
-                thread_id=active_thread_id, order=ListSortOrder.ASCENDING
+                thread_id=active_thread_id, order=ListSortOrder.DESCENDING
             )
 
             for msg in messages:
                 if msg.role == "assistant" and msg.text_messages:
                     context = msg.text_messages[-1].text.value
-                    logger.info(f"Retrieved context: {context[:100]}...")
+                    logger.info(f"Retrieved context ({len(context)} chars): {context[:100]}...")
+                    logger.debug(f"Full retrieved context:\n{context}")
                     return f"Relevant information from knowledge base:\n{context}"
 
             return None
