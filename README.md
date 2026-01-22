@@ -34,7 +34,27 @@ Avatar streaming requires your Azure resource to be in one of these regions:
 
 ## Quick Start
 
-### 1. Backend
+### Docker Compose (Recommended)
+
+The fastest way to get started:
+
+```bash
+# Configure environment
+cp backend/.env.example backend/.env
+# Edit backend/.env with your Azure credentials
+
+# Start both services
+docker compose up --build
+```
+
+Open http://localhost:3000 in your browser.
+
+### Manual Setup
+
+<details>
+<summary>Click to expand manual setup instructions</summary>
+
+#### 1. Backend
 
 ```bash
 cd backend
@@ -50,7 +70,7 @@ cp .env.example .env
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
-### 2. Frontend
+#### 2. Frontend
 
 ```bash
 cd frontend
@@ -62,9 +82,11 @@ npm install
 npm run dev
 ```
 
-### 3. Access
+#### 3. Access
 
 Open http://localhost:3000 in your browser.
+
+</details>
 
 ## Configuration
 
