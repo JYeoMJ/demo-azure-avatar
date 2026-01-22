@@ -23,6 +23,8 @@ from azure.ai.voicelive.models import (
     InputAudioFormat,
     OutputAudioFormat,
     AudioInputTranscriptionOptions,
+    AudioEchoCancellation,
+    AudioNoiseReduction,
 )
 
 from .config import settings
@@ -195,6 +197,8 @@ class VoiceAvatarSession:
             input_audio_transcription=input_transcription,
             max_response_output_tokens=settings.MAX_RESPONSE_TOKENS,
             avatar=avatar_config,
+            input_audio_echo_cancellation=AudioEchoCancellation(),
+            input_audio_noise_reduction=AudioNoiseReduction(type="azure_deep_noise_suppression"),
         )
 
     async def connect(self) -> dict:
