@@ -3,7 +3,7 @@ Pytest configuration and fixtures for voice avatar backend tests.
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 from app.main import app

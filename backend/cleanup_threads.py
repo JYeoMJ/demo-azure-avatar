@@ -49,6 +49,6 @@ for thread in threads:
         errors += 1
         print(f"[ERROR] Failed to delete {thread.id}: {e}")
 
-print(f"\nCleanup complete!")
+print("\nCleanup complete!")
 print(f"  Deleted: {deleted}")
 print(f"  Errors:  {errors}")

@@ -28,20 +28,23 @@ VOICELIVE_COMPATIBLE_MODELS = [
 class Settings:
     # Azure VoiceLive
     VOICELIVE_ENDPOINT: str = os.getenv(
-        "AZURE_VOICELIVE_ENDPOINT",
-        "wss://eastus2.voice.speech.microsoft.com"
+        "AZURE_VOICELIVE_ENDPOINT", "wss://eastus2.voice.speech.microsoft.com"
     )
     VOICELIVE_API_KEY: str = os.getenv("AZURE_VOICELIVE_API_KEY", "")
     VOICELIVE_MODEL: str = os.getenv("VOICELIVE_MODEL", "gpt-4o-realtime-preview")
 
     # Use token credential instead of API key
-    USE_TOKEN_CREDENTIAL: bool = os.getenv("USE_TOKEN_CREDENTIAL", "false").lower() == "true"
+    USE_TOKEN_CREDENTIAL: bool = (
+        os.getenv("USE_TOKEN_CREDENTIAL", "false").lower() == "true"
+    )
 
     # Avatar configuration
     AVATAR_CHARACTER: str = os.getenv("AVATAR_CHARACTER", "Beatriz")
     AVATAR_STYLE: str = os.getenv("AVATAR_STYLE", "")
     AVATAR_CUSTOMIZED: bool = os.getenv("AVATAR_CUSTOMIZED", "true").lower() == "true"
-    AVATAR_BASE_MODEL: str = os.getenv("AVATAR_BASE_MODEL", "vasa-1")  # Required for photo/custom avatars
+    AVATAR_BASE_MODEL: str = os.getenv(
+        "AVATAR_BASE_MODEL", "vasa-1"
+    )  # Required for photo/custom avatars
 
     # Video settings
     AVATAR_VIDEO_BITRATE: int = int(os.getenv("AVATAR_VIDEO_BITRATE", "2000000"))
@@ -60,7 +63,7 @@ class Settings:
         "ASSISTANT_INSTRUCTIONS",
         "You are a helpful AI voice assistant. "
         "Keep responses SHORT - maximum 2 sentences. "
-        "Be concise and conversational. Never give long explanations."
+        "Be concise and conversational. Never give long explanations.",
     )
 
     # Maximum tokens for assistant response (about 2 sentences)
@@ -72,7 +75,9 @@ class Settings:
 
     # Azure AI Foundry Agent Configuration
     # Enable Foundry Agent for RAG-augmented responses
-    FOUNDRY_AGENT_ENABLED: bool = os.getenv("FOUNDRY_AGENT_ENABLED", "false").lower() == "true"
+    FOUNDRY_AGENT_ENABLED: bool = (
+        os.getenv("FOUNDRY_AGENT_ENABLED", "false").lower() == "true"
+    )
     # Full AI Foundry project endpoint (required if enabled)
     # Format: https://<instance>.services.ai.azure.com/api/projects/<project-name>
     FOUNDRY_ENDPOINT: str = os.getenv("FOUNDRY_ENDPOINT", "")
@@ -86,17 +91,25 @@ class Settings:
         logger.info(f"  Model: {self.VOICELIVE_MODEL}")
         # Log avatar type based on configuration
         if self.AVATAR_BASE_MODEL:
-            logger.info(f"  Avatar: {self.AVATAR_CHARACTER} (photo-avatar, {self.AVATAR_BASE_MODEL})")
+            logger.info(
+                f"  Avatar: {self.AVATAR_CHARACTER} (photo-avatar, {self.AVATAR_BASE_MODEL})"
+            )
         else:
-            logger.info(f"  Avatar: {self.AVATAR_CHARACTER}/{self.AVATAR_STYLE} (video-avatar)")
+            logger.info(
+                f"  Avatar: {self.AVATAR_CHARACTER}/{self.AVATAR_STYLE} (video-avatar)"
+            )
         logger.info(f"  Voice: {self.VOICE_NAME}")
         logger.info(f"  Input languages: {self.INPUT_LANGUAGES}")
-        logger.info(f"  Video: {self.AVATAR_VIDEO_CODEC} @ {self.AVATAR_VIDEO_BITRATE} bps")
+        logger.info(
+            f"  Video: {self.AVATAR_VIDEO_CODEC} @ {self.AVATAR_VIDEO_BITRATE} bps"
+        )
         logger.info(f"  Max response tokens: {self.MAX_RESPONSE_TOKENS}")
 
         # Check API key
         if not self.VOICELIVE_API_KEY and not self.USE_TOKEN_CREDENTIAL:
-            logger.error("AZURE_VOICELIVE_API_KEY is not set and USE_TOKEN_CREDENTIAL is false!")
+            logger.error(
+                "AZURE_VOICELIVE_API_KEY is not set and USE_TOKEN_CREDENTIAL is false!"
+            )
         elif self.VOICELIVE_API_KEY:
             logger.info(f"  API Key: {'*' * 8}...{self.VOICELIVE_API_KEY[-4:]}")
         else:

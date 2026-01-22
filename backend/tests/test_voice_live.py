@@ -4,7 +4,12 @@ Tests for VoiceAvatarSession class and Azure VoiceLive integration.
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from app.voice_live import VoiceAvatarSession, _encode_client_sdp, _decode_server_sdp, EXPECTED_ERROR_CODES
+from app.voice_live import (
+    VoiceAvatarSession,
+    _encode_client_sdp,
+    _decode_server_sdp,
+    EXPECTED_ERROR_CODES,
+)
 
 
 class TestSdpEncoding:
@@ -18,8 +23,10 @@ class TestSdpEncoding:
         assert len(encoded) > 0
         # Should be valid base64
         import base64
+
         decoded = base64.b64decode(encoded).decode("utf-8")
         import json
+
         payload = json.loads(decoded)
         assert payload["type"] == "offer"
         assert payload["sdp"] == sdp
@@ -34,6 +41,7 @@ class TestSdpEncoding:
         """Base64 encoded SDP JSON should be decoded."""
         import base64
         import json
+
         sdp = "v=0\r\no=- 123 456 IN IP4 127.0.0.1"
         payload = json.dumps({"type": "answer", "sdp": sdp})
         encoded = base64.b64encode(payload.encode("utf-8")).decode("ascii")
@@ -231,7 +239,9 @@ class TestSessionConfiguration:
 
             assert config.avatar["type"] == "photo-avatar"
             assert config.avatar["model"] == "vasa-1"
-            assert config.avatar["customized"] is True  # Photo avatars need customized=true
+            assert (
+                config.avatar["customized"] is True
+            )  # Photo avatars need customized=true
             assert config.avatar["video"]["resolution"]["width"] == 512
             assert config.avatar["video"]["resolution"]["height"] == 512
 
@@ -263,8 +273,10 @@ class TestAvatarConnection:
     @pytest.mark.asyncio
     async def test_connect_creates_foundry_thread_when_enabled(self):
         """Connect should create a Foundry Agent thread when enabled."""
-        with patch("app.voice_live.connect") as mock_connect, \
-             patch("app.voice_live.foundry_agent") as mock_foundry:
+        with (
+            patch("app.voice_live.connect") as mock_connect,
+            patch("app.voice_live.foundry_agent") as mock_foundry,
+        ):
             # Setup mocks
             mock_connection = AsyncMock()
             mock_connection.session = AsyncMock()
@@ -286,8 +298,10 @@ class TestAvatarConnection:
     @pytest.mark.asyncio
     async def test_connect_skips_foundry_thread_when_disabled(self):
         """Connect should skip Foundry thread creation when disabled."""
-        with patch("app.voice_live.connect") as mock_connect, \
-             patch("app.voice_live.foundry_agent") as mock_foundry:
+        with (
+            patch("app.voice_live.connect") as mock_connect,
+            patch("app.voice_live.foundry_agent") as mock_foundry,
+        ):
             mock_connection = AsyncMock()
             mock_connection.session = AsyncMock()
             mock_cm = AsyncMock()
@@ -341,8 +355,16 @@ class TestAvatarEventHandling:
         mock_event.session = MagicMock()
         mock_event.session.avatar = MagicMock()
         mock_event.session.avatar.ice_servers = [
-            MagicMock(urls=["stun:stun.example.com:3478"], username="user1", credential="cred1"),
-            MagicMock(urls=["turn:turn.example.com:3478"], username="user2", credential="cred2"),
+            MagicMock(
+                urls=["stun:stun.example.com:3478"],
+                username="user1",
+                credential="cred1",
+            ),
+            MagicMock(
+                urls=["turn:turn.example.com:3478"],
+                username="user2",
+                credential="cred2",
+            ),
         ]
 
         result = await session._handle_event(mock_event)
@@ -559,7 +581,9 @@ class TestRAGContextInjection:
             assert call_kwargs[1]["conversation_context"] == ["Previous question"]
 
     @pytest.mark.asyncio
-    async def test_context_injection_excludes_current_query(self, mock_azure_connection):
+    async def test_context_injection_excludes_current_query(
+        self, mock_azure_connection
+    ):
         """Conversation context should exclude current query (last message)."""
         with patch("app.voice_live.foundry_agent") as mock_foundry:
             mock_foundry.enabled = True

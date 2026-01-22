@@ -153,15 +153,12 @@ class FoundryAgentService:
 
             # Add user message
             self._client.messages.create(
-                thread_id=thread.id,
-                role="user",
-                content=query
+                thread_id=thread.id, role="user", content=query
             )
 
             # Run the agent
             run = self._client.runs.create_and_process(
-                thread_id=thread.id,
-                agent_id=self._agent.id
+                thread_id=thread.id, agent_id=self._agent.id
             )
 
             if run.status == "failed":
@@ -170,8 +167,7 @@ class FoundryAgentService:
 
             # Get the messages
             messages = self._client.messages.list(
-                thread_id=thread.id,
-                order=ListSortOrder.ASCENDING
+                thread_id=thread.id, order=ListSortOrder.ASCENDING
             )
 
             # Find the assistant's response (last assistant message)
@@ -245,14 +241,11 @@ class FoundryAgentService:
                 active_thread_id = local_thread.id
 
             self._client.messages.create(
-                thread_id=active_thread_id,
-                role="user",
-                content=context_query
+                thread_id=active_thread_id, role="user", content=context_query
             )
 
             run = self._client.runs.create_and_process(
-                thread_id=active_thread_id,
-                agent_id=self._agent.id
+                thread_id=active_thread_id, agent_id=self._agent.id
             )
 
             if run.status == "failed":
@@ -260,8 +253,7 @@ class FoundryAgentService:
                 return None
 
             messages = self._client.messages.list(
-                thread_id=active_thread_id,
-                order=ListSortOrder.ASCENDING
+                thread_id=active_thread_id, order=ListSortOrder.ASCENDING
             )
 
             for msg in messages:

@@ -22,7 +22,6 @@ from azure.ai.voicelive.models import (
     Modality,
     InputAudioFormat,
     OutputAudioFormat,
-    ServerEventType,
     AudioInputTranscriptionOptions,
 )
 
@@ -134,7 +133,9 @@ class VoiceAvatarSession:
         # Voice configuration
         voice_config: Union[AzureStandardVoice, str]
         if "-" in settings.VOICE_NAME:
-            voice_config = AzureStandardVoice(name=settings.VOICE_NAME, type="azure-standard")
+            voice_config = AzureStandardVoice(
+                name=settings.VOICE_NAME, type="azure-standard"
+            )
         else:
             voice_config = settings.VOICE_NAME
 
@@ -153,14 +154,15 @@ class VoiceAvatarSession:
 
         avatar_config = {
             "character": settings.AVATAR_CHARACTER,
-            "customized": settings.AVATAR_CUSTOMIZED or is_photo_avatar,  # Photo avatars need customized=true
+            "customized": settings.AVATAR_CUSTOMIZED
+            or is_photo_avatar,  # Photo avatars need customized=true
             "video": {
                 "resolution": {
                     "width": 512 if is_photo_avatar else 1280,
-                    "height": 512 if is_photo_avatar else 720
+                    "height": 512 if is_photo_avatar else 720,
                 },
                 "bitrate": settings.AVATAR_VIDEO_BITRATE,
-            }
+            },
         }
 
         # Photo avatar specific config
@@ -221,8 +223,10 @@ class VoiceAvatarSession:
 
         # Configure session with avatar
         session_config = self._build_session_config()
-        logger.info(f"Session config: voice={settings.VOICE_NAME}, "
-                   f"input_langs={settings.INPUT_LANGUAGES}, max_tokens={settings.MAX_RESPONSE_TOKENS}")
+        logger.info(
+            f"Session config: voice={settings.VOICE_NAME}, "
+            f"input_langs={settings.INPUT_LANGUAGES}, max_tokens={settings.MAX_RESPONSE_TOKENS}"
+        )
         await self.connection.session.update(session=session_config)
 
         logger.info("VoiceLive session configured, waiting for session.updated event")
@@ -231,7 +235,9 @@ class VoiceAvatarSession:
         if foundry_agent.enabled:
             self._foundry_thread_id = foundry_agent.create_thread()
             if self._foundry_thread_id:
-                logger.info(f"Created Foundry Agent thread for session: {self._foundry_thread_id}")
+                logger.info(
+                    f"Created Foundry Agent thread for session: {self._foundry_thread_id}"
+                )
 
         return {"status": "connecting"}
 
@@ -278,14 +284,16 @@ class VoiceAvatarSession:
                 self._recent_user_messages.pop(0)
 
             # Create user message conversation item
-            await self.connection.send({
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": text}]
+            await self.connection.send(
+                {
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": text}],
+                    },
                 }
-            })
+            )
 
             # In turn-based mode with Foundry Agent, use agent for full response
             if self._turn_based_mode and foundry_agent.enabled:
@@ -296,20 +304,24 @@ class VoiceAvatarSession:
                     logger.info(f"Foundry Agent response: {response_text[:100]}...")
                     # Create assistant message with the pre-generated response
                     # VoiceLive will render this as TTS with avatar
-                    await self.connection.send({
-                        "type": "conversation.item.create",
-                        "item": {
-                            "type": "message",
-                            "role": "assistant",
-                            "content": [{"type": "text", "text": response_text}]
+                    await self.connection.send(
+                        {
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "text", "text": response_text}],
+                            },
                         }
-                    })
+                    )
                     # Trigger response to render the assistant message as audio
                     await self.connection.send({"type": "response.create"})
                     return True
                 else:
                     # Foundry Agent failed, fall back to VoiceLive's LLM
-                    logger.warning("Foundry Agent returned no response, using VoiceLive fallback")
+                    logger.warning(
+                        "Foundry Agent returned no response, using VoiceLive fallback"
+                    )
 
             # Default: inject context and let VoiceLive generate response
             await self._inject_rag_context(text)
@@ -358,7 +370,9 @@ class VoiceAvatarSession:
 
         try:
             self._turn_based_mode = turn_based
-            logger.info(f"Switching to {'turn-based' if turn_based else 'live voice'} mode")
+            logger.info(
+                f"Switching to {'turn-based' if turn_based else 'live voice'} mode"
+            )
 
             # Update session turn detection configuration
             turn_detection_config = {
@@ -369,10 +383,12 @@ class VoiceAvatarSession:
                 "create_response": not turn_based,
             }
 
-            await self.connection.send({
-                "type": "session.update",
-                "session": {"turn_detection": turn_detection_config}
-            })
+            await self.connection.send(
+                {
+                    "type": "session.update",
+                    "session": {"turn_detection": turn_detection_config},
+                }
+            )
             return True
         except Exception as e:
             logger.error(f"Error setting mode: {e}")
@@ -401,7 +417,9 @@ class VoiceAvatarSession:
         # Debounce: skip if called too recently
         now = time.time()
         if now - self._last_context_time < CONTEXT_DEBOUNCE_SECONDS:
-            logger.debug(f"Skipping context retrieval (debounce: {now - self._last_context_time:.1f}s < {CONTEXT_DEBOUNCE_SECONDS}s)")
+            logger.debug(
+                f"Skipping context retrieval (debounce: {now - self._last_context_time:.1f}s < {CONTEXT_DEBOUNCE_SECONDS}s)"
+            )
             return
 
         # Skip if query is very similar to last one (case-insensitive)
@@ -419,7 +437,11 @@ class VoiceAvatarSession:
 
                     # Get conversation context (previous messages, excluding current query)
                     # Use all but the last message since last message IS the current query
-                    conversation_context = self._recent_user_messages[:-1] if len(self._recent_user_messages) > 1 else None
+                    conversation_context = (
+                        self._recent_user_messages[:-1]
+                        if len(self._recent_user_messages) > 1
+                        else None
+                    )
 
                     # Run synchronous Foundry Agent call in thread pool to avoid blocking
                     # Pass thread_id for session-based context and conversation history
@@ -434,14 +456,18 @@ class VoiceAvatarSession:
                         return
 
                     augmented_instructions = f"{self._base_instructions}\n\n{context}"
-                    logger.info(f"Injecting Foundry Agent context ({len(context)} chars)")
+                    logger.info(
+                        f"Injecting Foundry Agent context ({len(context)} chars)"
+                    )
 
                     # Update session with augmented instructions
                     if self.connection and self.session_ready:
-                        await self.connection.send({
-                            "type": "session.update",
-                            "session": {"instructions": augmented_instructions}
-                        })
+                        await self.connection.send(
+                            {
+                                "type": "session.update",
+                                "session": {"instructions": augmented_instructions},
+                            }
+                        )
 
                 except Exception as e:
                     logger.error(f"Background RAG injection failed: {e}")
@@ -487,11 +513,13 @@ class VoiceAvatarSession:
             # Encode SDP as base64 JSON (required by Azure VoiceLive)
             encoded_sdp = _encode_client_sdp(client_sdp)
             logger.debug(f"Encoded SDP length: {len(encoded_sdp)} chars")
-            await self.connection.send({
-                "type": "session.avatar.connect",
-                "client_sdp": encoded_sdp,
-                "rtc_configuration": {"bundle_policy": "max-bundle"}
-            })
+            await self.connection.send(
+                {
+                    "type": "session.avatar.connect",
+                    "client_sdp": encoded_sdp,
+                    "rtc_configuration": {"bundle_policy": "max-bundle"},
+                }
+            )
             logger.info("Avatar connect message sent successfully")
         else:
             logger.error("Cannot send avatar SDP: no connection")
@@ -528,16 +556,16 @@ class VoiceAvatarSession:
             self.session_ready = True
             # Extract ICE servers if provided
             ice_servers_list = []
-            if hasattr(event, 'session') and hasattr(event.session, 'avatar'):
+            if hasattr(event, "session") and hasattr(event.session, "avatar"):
                 avatar_info = event.session.avatar
-                if hasattr(avatar_info, 'ice_servers') and avatar_info.ice_servers:
+                if hasattr(avatar_info, "ice_servers") and avatar_info.ice_servers:
                     for server in avatar_info.ice_servers:
                         ice_server_dict = {
-                            "urls": server.urls if hasattr(server, 'urls') else [],
+                            "urls": server.urls if hasattr(server, "urls") else [],
                         }
-                        if hasattr(server, 'username') and server.username:
+                        if hasattr(server, "username") and server.username:
                             ice_server_dict["username"] = server.username
-                        if hasattr(server, 'credential') and server.credential:
+                        if hasattr(server, "credential") and server.credential:
                             ice_server_dict["credential"] = server.credential
                         ice_servers_list.append(ice_server_dict)
             self.avatar_ice_servers = ice_servers_list
@@ -545,27 +573,27 @@ class VoiceAvatarSession:
             logger.info(f"Session ready with {len(ice_servers_list)} ICE server(s)")
             if ice_servers_list:
                 logger.info(f"ICE servers: {ice_servers_list}")
-            return {
-                "type": "session.ready",
-                "ice_servers": self.avatar_ice_servers
-            }
+            return {"type": "session.ready", "ice_servers": self.avatar_ice_servers}
 
         elif event_type_str == "session.avatar.connecting":
             # Server SDP for WebRTC (may be base64-encoded JSON)
-            logger.info(f"Received avatar connecting event. Has server_sdp: {hasattr(event, 'server_sdp')}")
-            server_sdp_raw = event.server_sdp if hasattr(event, 'server_sdp') else None
+            logger.info(
+                f"Received avatar connecting event. Has server_sdp: {hasattr(event, 'server_sdp')}"
+            )
+            server_sdp_raw = event.server_sdp if hasattr(event, "server_sdp") else None
             if server_sdp_raw:
-                logger.info(f"Raw server SDP received (length: {len(server_sdp_raw)} chars)")
+                logger.info(
+                    f"Raw server SDP received (length: {len(server_sdp_raw)} chars)"
+                )
                 # Decode if needed (Azure may return base64-encoded JSON)
                 server_sdp = _decode_server_sdp(server_sdp_raw)
-                logger.info(f"Decoded server SDP (length: {len(server_sdp) if server_sdp else 0} chars)")
+                logger.info(
+                    f"Decoded server SDP (length: {len(server_sdp) if server_sdp else 0} chars)"
+                )
             else:
-                logger.error(f"Avatar connecting event has no server_sdp!")
+                logger.error("Avatar connecting event has no server_sdp!")
                 server_sdp = None
-            return {
-                "type": "avatar.sdp",
-                "server_sdp": server_sdp
-            }
+            return {"type": "avatar.sdp", "server_sdp": server_sdp}
 
         elif event_type_str == "session.avatar.connected":
             logger.info("Avatar WebRTC connection established")
@@ -574,15 +602,12 @@ class VoiceAvatarSession:
         elif event_type_str in ("session.avatar.error", "session.avatar.failed"):
             # Avatar connection failed - frontend should fall back to voice-only
             error_msg = "Avatar connection failed"
-            if hasattr(event, 'error'):
+            if hasattr(event, "error"):
                 error_msg = str(event.error)
-            elif hasattr(event, 'message'):
+            elif hasattr(event, "message"):
                 error_msg = event.message
             logger.error(f"Avatar error: {error_msg}")
-            return {
-                "type": "avatar.error",
-                "message": error_msg
-            }
+            return {"type": "avatar.error", "message": error_msg}
 
         # Voice activity detection events
         elif event_type_str == "input_audio_buffer.speech_started":
@@ -609,7 +634,7 @@ class VoiceAvatarSession:
         elif event_type_str == "conversation.item.input_audio_transcription.completed":
             # User's speech has been transcribed
             transcript = None
-            if hasattr(event, 'transcript'):
+            if hasattr(event, "transcript"):
                 transcript = event.transcript
             logger.info(f"User transcript: {transcript}")
             if transcript and transcript.strip():
@@ -624,7 +649,7 @@ class VoiceAvatarSession:
                     "type": "transcript",
                     "role": "user",
                     "text": transcript,
-                    "language": detect_language(transcript)
+                    "language": detect_language(transcript),
                 }
             return None
 
@@ -646,16 +671,13 @@ class VoiceAvatarSession:
         elif event_type_str == "response.audio.delta":
             # Forward audio chunks to client for playback
             audio_data = None
-            if hasattr(event, 'delta'):
+            if hasattr(event, "delta"):
                 audio_data = event.delta
             if audio_data:
                 # Convert bytes to base64 string for JSON serialization
                 if isinstance(audio_data, bytes):
-                    audio_data = base64.b64encode(audio_data).decode('utf-8')
-                return {
-                    "type": "audio.delta",
-                    "data": audio_data
-                }
+                    audio_data = base64.b64encode(audio_data).decode("utf-8")
+                return {"type": "audio.delta", "data": audio_data}
             return None
 
         elif event_type_str == "response.audio.done":
@@ -665,29 +687,23 @@ class VoiceAvatarSession:
         # Transcript events - Assistant response (streaming)
         elif event_type_str == "response.audio_transcript.delta":
             # Forward incremental transcript updates for real-time display
-            delta = getattr(event, 'delta', None)
+            delta = getattr(event, "delta", None)
             if delta:
                 logger.debug(f"Transcript delta: {delta}")
-                return {
-                    "type": "transcript.delta",
-                    "role": "assistant",
-                    "delta": delta
-                }
+                return {"type": "transcript.delta", "role": "assistant", "delta": delta}
             return None
 
         elif event_type_str == "response.audio_transcript.done":
             # Complete assistant transcript
             transcript = None
-            if hasattr(event, 'transcript'):
+            if hasattr(event, "transcript"):
                 transcript = event.transcript
             logger.info(f"Assistant transcript: {transcript}")
             if transcript and transcript.strip():
-                logger.info(f"Sending assistant transcript to client: {transcript[:50]}...")
-                return {
-                    "type": "transcript",
-                    "role": "assistant",
-                    "text": transcript
-                }
+                logger.info(
+                    f"Sending assistant transcript to client: {transcript[:50]}..."
+                )
+                return {"type": "transcript", "role": "assistant", "text": transcript}
             return None
 
         elif event_type_str == "response.content_part.done":
@@ -717,13 +733,15 @@ class VoiceAvatarSession:
         elif event_type_str == "error":
             error_msg = "Unknown error"
             error_code = "unknown"
-            if hasattr(event, 'error'):
+            if hasattr(event, "error"):
                 if isinstance(event.error, dict):
-                    error_msg = event.error.get('message', str(event.error))
-                    error_code = event.error.get('code', 'unknown')
-                elif hasattr(event.error, 'message'):
+                    error_msg = event.error.get("message", str(event.error))
+                    error_code = event.error.get("code", "unknown")
+                elif hasattr(event.error, "message"):
                     error_msg = event.error.message
-                    error_code = event.error.code if hasattr(event.error, 'code') else 'unknown'
+                    error_code = (
+                        event.error.code if hasattr(event.error, "code") else "unknown"
+                    )
 
             # Filter out expected errors that shouldn't be shown to user
             if error_code in EXPECTED_ERROR_CODES:
@@ -737,8 +755,10 @@ class VoiceAvatarSession:
             # Word-level timestamps for avatar sync
             return {
                 "type": "audio.timestamp",
-                "text": event.text if hasattr(event, 'text') else None,
-                "offset_ms": event.audio_offset_ms if hasattr(event, 'audio_offset_ms') else None
+                "text": event.text if hasattr(event, "text") else None,
+                "offset_ms": event.audio_offset_ms
+                if hasattr(event, "audio_offset_ms")
+                else None,
             }
 
         # Log unhandled events for debugging
@@ -779,7 +799,7 @@ class VoiceAvatarSession:
         elif self.connection:
             # Fallback if connection was created without context manager
             try:
-                if hasattr(self.connection, 'close'):
+                if hasattr(self.connection, "close"):
                     await self.connection.close()
             except Exception as e:
                 logger.error(f"Error disconnecting: {e}")

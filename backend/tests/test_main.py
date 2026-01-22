@@ -3,8 +3,12 @@ Tests for FastAPI WebSocket endpoint and input validation.
 """
 
 import base64
-import pytest
-from app.main import validate_base64_data, RateLimiter, MAX_AUDIO_CHUNK_SIZE, MAX_SDP_SIZE
+from app.main import (
+    validate_base64_data,
+    RateLimiter,
+    MAX_AUDIO_CHUNK_SIZE,
+    MAX_SDP_SIZE,
+)
 
 
 class TestValidateBase64Data:
@@ -63,6 +67,7 @@ class TestRateLimiter:
     def test_window_expiry(self):
         """Messages should be allowed again after window expires."""
         import time
+
         limiter = RateLimiter(max_messages=2, window_seconds=0.1)
         limiter.allow()
         limiter.allow()

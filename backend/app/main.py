@@ -62,9 +62,9 @@ def validate_base64_data(data: str, max_size: int) -> tuple[bool, Optional[str]]
     except Exception as e:
         return False, f"Invalid base64 encoding: {e}"
 
+
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,9 @@ active_sessions: set[int] = set()
 
 # Suppress verbose HTTP library logging (response headers, etc.)
 logging.getLogger("azure").setLevel(logging.WARNING)
-logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
+logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(
+    logging.WARNING
+)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
@@ -124,7 +126,7 @@ async def get_connections():
     """Get count of active VoiceLive connections."""
     return {
         "active_sessions": len(active_sessions),
-        "session_ids": list(active_sessions)
+        "session_ids": list(active_sessions),
     }
 
 
@@ -144,7 +146,9 @@ async def voice_avatar_websocket(websocket: WebSocket):
     await websocket.accept()
     session_id = id(websocket)
     active_sessions.add(session_id)
-    logger.info(f"WebSocket client connected (session={session_id}, active={len(active_sessions)})")
+    logger.info(
+        f"WebSocket client connected (session={session_id}, active={len(active_sessions)})"
+    )
 
     session = VoiceAvatarSession()
     event_task = None
@@ -172,18 +176,19 @@ async def voice_avatar_websocket(websocket: WebSocket):
             try:
                 # Add idle timeout to detect stale clients and prevent leaked Azure connections
                 data = await asyncio.wait_for(
-                    websocket.receive_text(),
-                    timeout=WEBSOCKET_IDLE_TIMEOUT
+                    websocket.receive_text(), timeout=WEBSOCKET_IDLE_TIMEOUT
                 )
 
                 # Rate limiting - check AFTER receiving the message
                 if not rate_limiter.allow():
                     logger.warning("Rate limit exceeded for client")
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": "Rate limit exceeded",
-                        "code": "rate_limited"
-                    })
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": "Rate limit exceeded",
+                            "code": "rate_limited",
+                        }
+                    )
                     continue
 
                 message = json.loads(data)
@@ -191,13 +196,17 @@ async def voice_avatar_websocket(websocket: WebSocket):
                     session, message, websocket, audio_chunk_count
                 )
             except asyncio.TimeoutError:
-                logger.info(f"WebSocket idle timeout ({WEBSOCKET_IDLE_TIMEOUT}s) - closing connection")
+                logger.info(
+                    f"WebSocket idle timeout ({WEBSOCKET_IDLE_TIMEOUT}s) - closing connection"
+                )
                 try:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": "Connection timed out due to inactivity",
-                        "code": "idle_timeout"
-                    })
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": "Connection timed out due to inactivity",
+                            "code": "idle_timeout",
+                        }
+                    )
                 except Exception:
                     pass
                 break
@@ -206,11 +215,13 @@ async def voice_avatar_websocket(websocket: WebSocket):
                 break
             except json.JSONDecodeError as e:
                 logger.error(f"Invalid JSON from client: {e}")
-                await websocket.send_json({
-                    "type": "error",
-                    "message": "Invalid JSON format",
-                    "code": "invalid_json"
-                })
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "message": "Invalid JSON format",
+                        "code": "invalid_json",
+                    }
+                )
             except Exception as e:
                 logger.error(f"Error handling client message: {e}")
                 break
@@ -233,14 +244,16 @@ async def voice_avatar_websocket(websocket: WebSocket):
 
         await session.disconnect()
         active_sessions.discard(session_id)
-        logger.info(f"Session cleaned up (session={session_id}, remaining={len(active_sessions)})")
+        logger.info(
+            f"Session cleaned up (session={session_id}, remaining={len(active_sessions)})"
+        )
 
 
 async def handle_client_message(
     session: VoiceAvatarSession,
     message: dict,
     websocket: WebSocket,
-    audio_chunk_count: int
+    audio_chunk_count: int,
 ) -> int:
     """
     Handle messages from the WebSocket client.
@@ -264,25 +277,28 @@ async def handle_client_message(
             is_valid, error = validate_base64_data(audio_data, MAX_AUDIO_CHUNK_SIZE)
             if not is_valid:
                 logger.warning(f"Invalid audio data: {error}")
-                await websocket.send_json({
-                    "type": "error",
-                    "message": f"Invalid audio data: {error}",
-                    "code": "invalid_audio"
-                })
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "message": f"Invalid audio data: {error}",
+                        "code": "invalid_audio",
+                    }
+                )
                 return audio_chunk_count
 
             # Log periodically to avoid spam (every 100 chunks = ~17 seconds at 4096 samples/24kHz)
             audio_chunk_count += 1
             if audio_chunk_count % 100 == 1:
-                logger.info(f"Audio streaming... (chunk #{audio_chunk_count}, size: {len(audio_data)} chars)")
+                logger.info(
+                    f"Audio streaming... (chunk #{audio_chunk_count}, size: {len(audio_data)} chars)"
+                )
 
             # Send audio and notify client if dropped
             audio_sent = await session.send_audio(audio_data)
             if not audio_sent:
-                await websocket.send_json({
-                    "type": "audio.dropped",
-                    "reason": "session_not_ready"
-                })
+                await websocket.send_json(
+                    {"type": "audio.dropped", "reason": "session_not_ready"}
+                )
 
     elif msg_type == "avatar.sdp":
         # Client SDP for avatar WebRTC
@@ -290,18 +306,26 @@ async def handle_client_message(
         if client_sdp:
             # Validate SDP size
             if len(client_sdp) > MAX_SDP_SIZE:
-                logger.warning(f"SDP exceeds maximum size: {len(client_sdp)} > {MAX_SDP_SIZE}")
-                await websocket.send_json({
-                    "type": "error",
-                    "message": "SDP exceeds maximum allowed size",
-                    "code": "invalid_sdp"
-                })
+                logger.warning(
+                    f"SDP exceeds maximum size: {len(client_sdp)} > {MAX_SDP_SIZE}"
+                )
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "message": "SDP exceeds maximum allowed size",
+                        "code": "invalid_sdp",
+                    }
+                )
                 return audio_chunk_count
 
-            logger.info(f"Received client SDP for avatar (length: {len(client_sdp)} chars)")
+            logger.info(
+                f"Received client SDP for avatar (length: {len(client_sdp)} chars)"
+            )
             await session.send_avatar_sdp(client_sdp)
         else:
-            logger.warning("Received avatar.sdp message but 'sdp' field is missing/empty")
+            logger.warning(
+                "Received avatar.sdp message but 'sdp' field is missing/empty"
+            )
 
     elif msg_type == "text.input":
         # Text input from client
@@ -309,34 +333,41 @@ async def handle_client_message(
         if text_content:
             # Validate text length
             if len(text_content) > MAX_TEXT_INPUT_SIZE:
-                logger.warning(f"Text input exceeds maximum size: {len(text_content)} > {MAX_TEXT_INPUT_SIZE}")
-                await websocket.send_json({
-                    "type": "error",
-                    "message": "Text input exceeds maximum allowed size",
-                    "code": "text_too_long"
-                })
+                logger.warning(
+                    f"Text input exceeds maximum size: {len(text_content)} > {MAX_TEXT_INPUT_SIZE}"
+                )
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "message": "Text input exceeds maximum allowed size",
+                        "code": "text_too_long",
+                    }
+                )
                 return audio_chunk_count
 
             logger.info(f"Received text input (length: {len(text_content)} chars)")
             text_sent = await session.send_text_input(text_content)
             if not text_sent:
-                await websocket.send_json({
-                    "type": "text.dropped",
-                    "reason": "session_not_ready"
-                })
+                await websocket.send_json(
+                    {"type": "text.dropped", "reason": "session_not_ready"}
+                )
         else:
-            logger.warning("Received text.input message but 'text' field is missing/empty")
+            logger.warning(
+                "Received text.input message but 'text' field is missing/empty"
+            )
 
     elif msg_type == "response.trigger":
         # Manually trigger assistant response (for turn-based mode)
         logger.info("Received response.trigger request")
         triggered = await session.trigger_response()
         if not triggered:
-            await websocket.send_json({
-                "type": "error",
-                "message": "Failed to trigger response",
-                "code": "trigger_failed"
-            })
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "message": "Failed to trigger response",
+                    "code": "trigger_failed",
+                }
+            )
 
     elif msg_type == "mode.set":
         # Switch between turn-based and live voice mode
@@ -344,16 +375,17 @@ async def handle_client_message(
         logger.info(f"Received mode.set request: turn_based={turn_based}")
         success = await session.set_mode(turn_based)
         if success:
-            await websocket.send_json({
-                "type": "mode.updated",
-                "turn_based": turn_based
-            })
+            await websocket.send_json(
+                {"type": "mode.updated", "turn_based": turn_based}
+            )
         else:
-            await websocket.send_json({
-                "type": "error",
-                "message": "Failed to update mode",
-                "code": "mode_update_failed"
-            })
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "message": "Failed to update mode",
+                    "code": "mode_update_failed",
+                }
+            )
 
     else:
         logger.warning(f"Unknown message type: {msg_type}")
@@ -363,4 +395,5 @@ async def handle_client_message(
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

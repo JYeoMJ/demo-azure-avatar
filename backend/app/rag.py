@@ -44,15 +44,23 @@ class RAGRetriever:
             logger.info("RAG is disabled")
             return False
 
-        if not all([
-            settings.AZURE_SEARCH_ENDPOINT,
-            settings.AZURE_SEARCH_API_KEY,
-            settings.AZURE_SEARCH_INDEX
-        ]):
+        if not all(
+            [
+                settings.AZURE_SEARCH_ENDPOINT,
+                settings.AZURE_SEARCH_API_KEY,
+                settings.AZURE_SEARCH_INDEX,
+            ]
+        ):
             logger.warning("RAG enabled but missing Azure Search configuration")
-            logger.warning(f"  Endpoint: {'set' if settings.AZURE_SEARCH_ENDPOINT else 'MISSING'}")
-            logger.warning(f"  API Key: {'set' if settings.AZURE_SEARCH_API_KEY else 'MISSING'}")
-            logger.warning(f"  Index: {'set' if settings.AZURE_SEARCH_INDEX else 'MISSING'}")
+            logger.warning(
+                f"  Endpoint: {'set' if settings.AZURE_SEARCH_ENDPOINT else 'MISSING'}"
+            )
+            logger.warning(
+                f"  API Key: {'set' if settings.AZURE_SEARCH_API_KEY else 'MISSING'}"
+            )
+            logger.warning(
+                f"  Index: {'set' if settings.AZURE_SEARCH_INDEX else 'MISSING'}"
+            )
             return False
 
         try:
@@ -60,7 +68,7 @@ class RAGRetriever:
             self._client = SearchClient(
                 endpoint=settings.AZURE_SEARCH_ENDPOINT,
                 index_name=settings.AZURE_SEARCH_INDEX,
-                credential=credential
+                credential=credential,
             )
             self._initialized = True
             logger.info(f"RAG initialized with index: {settings.AZURE_SEARCH_INDEX}")
@@ -99,13 +107,15 @@ class RAGRetriever:
                 doc = {
                     "content": result.get("content", ""),
                     "title": result.get("title", ""),
-                    "score": result.get("@search.score", 0)
+                    "score": result.get("@search.score", 0),
                 }
                 # Only include documents with content
                 if doc["content"]:
                     documents.append(doc)
 
-            logger.info(f"RAG retrieved {len(documents)} documents for query: {query[:50]}...")
+            logger.info(
+                f"RAG retrieved {len(documents)} documents for query: {query[:50]}..."
+            )
             return documents
 
         except Exception as e:
