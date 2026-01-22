@@ -1,51 +1,52 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import Image from "next/image";
 import VoiceAvatar from "@/components/VoiceAvatar";
 
 export default function Home() {
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   return (
-    <main className="min-h-screen bg-gray-100">
+    <main className="h-screen flex flex-col overflow-hidden">
       {/* Header Bar */}
-      <header className="bg-[#002A50] px-6 py-4">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
+      <header className="bg-[#002A50] px-6 py-3 shrink-0">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
             {/* Logo */}
-            <div className="w-10 h-10 bg-orange-500 rounded-lg flex items-center justify-center">
-              <svg
-                className="w-6 h-6 text-white"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
-                />
-              </svg>
-            </div>
+            <Image
+              src="/DTT_Logo_removebg.png"
+              alt="DTT Logo"
+              width={48}
+              height={48}
+              className="w-12 h-12 object-contain"
+            />
             <div>
-              <h1 className="text-lg font-semibold text-white">
+              <p className="text-xs text-blue-300 uppercase tracking-wider font-medium">
                 DTT Engagement Day
-              </h1>
-              <p className="text-sm text-blue-200">
-                Digital Think Tank SWAT Team
               </p>
+              <h1 className="text-lg font-bold text-white">
+                Digital Think Tank SWAT Team
+              </h1>
             </div>
           </div>
 
           {/* Status Badge */}
           <div className="flex items-center gap-2 bg-white/10 px-4 py-2 rounded-full border border-white/20">
-            <span className="w-2 h-2 bg-green-400 rounded-full" />
-            <span className="text-sm text-white">System Operational</span>
+            {mounted && (
+              <span className="w-2.5 h-2.5 bg-green-400 rounded-full animate-pulse" />
+            )}
+            <span className="text-sm text-white font-medium">System Operational</span>
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <div className="max-w-7xl mx-auto px-6 py-8">
-        <VoiceAvatar />
-      </div>
+      <VoiceAvatar />
     </main>
   );
 }
