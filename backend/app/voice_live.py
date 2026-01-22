@@ -445,12 +445,22 @@ class VoiceAvatarSession:
 
                     # Run synchronous Foundry Agent call in thread pool to avoid blocking
                     # Pass thread_id for session-based context and conversation history
-                    context = await asyncio.to_thread(
-                        foundry_agent.get_context,
-                        query,
-                        thread_id=self._foundry_thread_id,
-                        conversation_context=conversation_context,
-                    )
+                    # Use timeout to prevent thread pool exhaustion if Foundry hangs
+                    try:
+                        context = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                foundry_agent.get_context,
+                                query,
+                                thread_id=self._foundry_thread_id,
+                                conversation_context=conversation_context,
+                            ),
+                            timeout=10.0,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "Foundry Agent context retrieval timed out after 10s"
+                        )
+                        return
                     if not context:
                         logger.debug("No relevant context found from Foundry Agent")
                         return
