@@ -117,6 +117,9 @@ class VoiceAvatarSession:
         self._context_semaphore = asyncio.Semaphore(1)  # Max 1 concurrent context call
         self._last_context_time = 0.0
         self._last_context_query = ""
+        # Session-based Foundry Agent thread management
+        self._foundry_thread_id: Optional[str] = None
+        self._recent_user_messages: list[str] = []  # Last 3 messages for context
         # Initialize Foundry Agent if enabled
         foundry_agent.initialize()
 
@@ -224,6 +227,12 @@ class VoiceAvatarSession:
 
         logger.info("VoiceLive session configured, waiting for session.updated event")
 
+        # Create Foundry Agent thread for this session (if enabled)
+        if foundry_agent.enabled:
+            self._foundry_thread_id = foundry_agent.create_thread()
+            if self._foundry_thread_id:
+                logger.info(f"Created Foundry Agent thread for session: {self._foundry_thread_id}")
+
         return {"status": "connecting"}
 
     async def send_audio(self, audio_base64: str) -> bool:
@@ -262,6 +271,11 @@ class VoiceAvatarSession:
 
         try:
             logger.info(f"Sending text input: {text[:50]}...")
+
+            # Track user message for conversation context (keep last 3)
+            self._recent_user_messages.append(text)
+            if len(self._recent_user_messages) > 3:
+                self._recent_user_messages.pop(0)
 
             # Create user message conversation item
             await self.connection.send({
@@ -403,8 +417,18 @@ class VoiceAvatarSession:
                     self._last_context_time = time.time()
                     self._last_context_query = query
 
+                    # Get conversation context (previous messages, excluding current query)
+                    # Use all but the last message since last message IS the current query
+                    conversation_context = self._recent_user_messages[:-1] if len(self._recent_user_messages) > 1 else None
+
                     # Run synchronous Foundry Agent call in thread pool to avoid blocking
-                    context = await asyncio.to_thread(foundry_agent.get_context, query)
+                    # Pass thread_id for session-based context and conversation history
+                    context = await asyncio.to_thread(
+                        foundry_agent.get_context,
+                        query,
+                        thread_id=self._foundry_thread_id,
+                        conversation_context=conversation_context,
+                    )
                     if not context:
                         logger.debug("No relevant context found from Foundry Agent")
                         return
@@ -590,6 +614,10 @@ class VoiceAvatarSession:
             logger.info(f"User transcript: {transcript}")
             if transcript and transcript.strip():
                 logger.info(f"Sending user transcript to client: {transcript[:50]}...")
+                # Track user message for conversation context (keep last 3)
+                self._recent_user_messages.append(transcript)
+                if len(self._recent_user_messages) > 3:
+                    self._recent_user_messages.pop(0)
                 # Fire-and-forget RAG context injection (returns immediately, runs in background)
                 await self._inject_rag_context(transcript)
                 return {
@@ -727,6 +755,16 @@ class VoiceAvatarSession:
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
         self._background_tasks.clear()
+
+        # Delete Foundry Agent thread for this session
+        if self._foundry_thread_id:
+            try:
+                foundry_agent.delete_thread(self._foundry_thread_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete Foundry thread: {e}")
+            finally:
+                self._foundry_thread_id = None
+                self._recent_user_messages.clear()
 
         # Properly exit the connection context manager
         if self._connection_cm:
