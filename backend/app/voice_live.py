@@ -9,6 +9,7 @@ import asyncio
 import base64
 import json
 import logging
+import time
 from typing import AsyncGenerator, Optional, Union, Any
 
 from azure.core.credentials import AzureKeyCredential, TokenCredential
@@ -61,6 +62,9 @@ EXPECTED_ERROR_CODES = {
     "response_cancel_not_active",  # User interrupted after response already completed
 }
 
+# Rate limit protection: minimum seconds between RAG context retrieval calls
+CONTEXT_DEBOUNCE_SECONDS = 2.0
+
 
 def _encode_client_sdp(client_sdp: str) -> str:
     """Encode SDP as base64 JSON for Azure VoiceLive avatar."""
@@ -109,6 +113,10 @@ class VoiceAvatarSession:
         self._turn_based_mode = settings.TURN_BASED_MODE
         self._base_instructions = settings.ASSISTANT_INSTRUCTIONS
         self._background_tasks: set[asyncio.Task] = set()  # Track background tasks
+        # Rate limit protection for RAG context retrieval
+        self._context_semaphore = asyncio.Semaphore(1)  # Max 1 concurrent context call
+        self._last_context_time = 0.0
+        self._last_context_query = ""
         # Initialize Foundry Agent if enabled
         foundry_agent.initialize()
 
@@ -365,31 +373,56 @@ class VoiceAvatarSession:
         """
         Background task to retrieve and inject RAG context without blocking event stream.
 
+        Includes rate limit protection:
+        - Debouncing: Skip if called too recently (within CONTEXT_DEBOUNCE_SECONDS)
+        - Duplicate detection: Skip if query is identical to last one
+        - Concurrency limiting: Only 1 context call at a time (semaphore)
+
         Args:
             query: The user's query (transcribed speech or text input)
         """
         if not foundry_agent.enabled:
             return
 
-        try:
-            # Run synchronous Foundry Agent call in thread pool to avoid blocking
-            context = await asyncio.to_thread(foundry_agent.get_context, query)
-            if not context:
-                logger.debug("No relevant context found from Foundry Agent")
-                return
+        # Debounce: skip if called too recently
+        now = time.time()
+        if now - self._last_context_time < CONTEXT_DEBOUNCE_SECONDS:
+            logger.debug(f"Skipping context retrieval (debounce: {now - self._last_context_time:.1f}s < {CONTEXT_DEBOUNCE_SECONDS}s)")
+            return
 
-            augmented_instructions = f"{self._base_instructions}\n\n{context}"
-            logger.info(f"Injecting Foundry Agent context ({len(context)} chars)")
+        # Skip if query is very similar to last one (case-insensitive)
+        if query.strip().lower() == self._last_context_query.strip().lower():
+            logger.debug("Skipping context retrieval (duplicate query)")
+            return
 
-            # Update session with augmented instructions
-            if self.connection and self.session_ready:
-                await self.connection.send({
-                    "type": "session.update",
-                    "session": {"instructions": augmented_instructions}
-                })
+        # Limit concurrency to 1 - if another call is in progress, skip this one
+        if not self._context_semaphore.locked():
+            async with self._context_semaphore:
+                try:
+                    # Update tracking before the call
+                    self._last_context_time = time.time()
+                    self._last_context_query = query
 
-        except Exception as e:
-            logger.error(f"Background RAG injection failed: {e}")
+                    # Run synchronous Foundry Agent call in thread pool to avoid blocking
+                    context = await asyncio.to_thread(foundry_agent.get_context, query)
+                    if not context:
+                        logger.debug("No relevant context found from Foundry Agent")
+                        return
+
+                    augmented_instructions = f"{self._base_instructions}\n\n{context}"
+                    logger.info(f"Injecting Foundry Agent context ({len(context)} chars)")
+
+                    # Update session with augmented instructions
+                    if self.connection and self.session_ready:
+                        await self.connection.send({
+                            "type": "session.update",
+                            "session": {"instructions": augmented_instructions}
+                        })
+
+                except Exception as e:
+                    logger.error(f"Background RAG injection failed: {e}")
+        else:
+            logger.debug("Skipping context retrieval (another call in progress)")
 
     def _track_task(self, task: asyncio.Task) -> None:
         """Track a background task and clean up when done."""
