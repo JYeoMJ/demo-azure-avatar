@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import React, { useEffect, useRef, memo, useState } from "react";
 import {
   useVoiceAvatar,
   SessionStatus,
@@ -79,7 +79,7 @@ function SpeakingIndicator({ state }: { state: SpeakingState }) {
   );
 }
 
-function TranscriptPanel({
+const TranscriptPanel = memo(function TranscriptPanel({
   transcripts,
   streamingTranscript,
 }: {
@@ -87,11 +87,24 @@ function TranscriptPanel({
   streamingTranscript: string;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
 
+  // Debounced auto-scroll to reduce layout thrashing
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (scrollTimeoutRef.current) {
+      clearTimeout(scrollTimeoutRef.current);
     }
+    scrollTimeoutRef.current = setTimeout(() => {
+      if (scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    }, 100); // 100ms debounce
+
+    return () => {
+      if (scrollTimeoutRef.current) {
+        clearTimeout(scrollTimeoutRef.current);
+      }
+    };
   }, [transcripts, streamingTranscript]);
 
   if (transcripts.length === 0 && !streamingTranscript) {
@@ -118,9 +131,9 @@ function TranscriptPanel({
 
   return (
     <div ref={scrollRef} className="h-full overflow-y-auto space-y-3 p-4">
-      {transcripts.map((entry, index) => (
+      {transcripts.map((entry) => (
         <div
-          key={index}
+          key={entry.id}
           className={`flex ${
             entry.role === "user" ? "justify-end" : "justify-start"
           }`}
@@ -147,7 +160,7 @@ function TranscriptPanel({
       )}
     </div>
   );
-}
+});
 
 export default function VoiceAvatar() {
   const {
@@ -158,14 +171,34 @@ export default function VoiceAvatar() {
     videoStream,
     audioStream,
     avatarStatus,
+    microphoneEnabled,
     connect,
     disconnect,
+    sendTextMessage,
+    setMicrophoneEnabled,
   } = useVoiceAvatar({
     onError: (error) => console.error("Voice Avatar error:", error),
   });
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const [textMode, setTextMode] = useState(false);
+  const [textInput, setTextInput] = useState("");
+
+  // Handle text mode toggle
+  const handleTextModeToggle = (enabled: boolean) => {
+    setTextMode(enabled);
+    setMicrophoneEnabled(!enabled); // Disable mic when text mode is on
+  };
+
+  // Handle text form submission
+  const handleTextSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (textInput.trim()) {
+      sendTextMessage(textInput);
+      setTextInput("");
+    }
+  };
 
   // Attach video stream
   useEffect(() => {
@@ -275,9 +308,43 @@ export default function VoiceAvatar() {
               )}
             </div>
 
+            {/* Text Mode Toggle */}
+            {isConnected && (
+              <div className="flex items-center justify-center gap-3">
+                <button
+                  onClick={() => handleTextModeToggle(!textMode)}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors
+                             ${textMode
+                               ? "bg-blue-100 text-blue-700 border border-blue-300"
+                               : "bg-gray-100 text-gray-600 border border-gray-200 hover:bg-gray-200"
+                             }`}
+                  aria-pressed={textMode}
+                  aria-label={textMode ? "Switch to voice mode" : "Switch to text mode"}
+                >
+                  {textMode ? (
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                    </svg>
+                  )}
+                  <span className="text-sm font-medium">
+                    {textMode ? "Text Mode" : "Voice Mode"}
+                  </span>
+                </button>
+              </div>
+            )}
+
             {isConnected && (
               <p className="text-sm text-gray-500 text-center">
-                Speak naturally - the avatar will respond automatically
+                {textMode
+                  ? "Type your message below"
+                  : "Speak naturally - the avatar will respond automatically"
+                }
               </p>
             )}
           </div>
@@ -302,6 +369,37 @@ export default function VoiceAvatar() {
         >
           <TranscriptPanel transcripts={transcripts} streamingTranscript={streamingTranscript} />
         </div>
+
+        {/* Text Input (shown in text mode when connected) */}
+        {isConnected && textMode && (
+          <form onSubmit={handleTextSubmit} className="p-4 border-t border-gray-100">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                placeholder="Type your message..."
+                className="flex-1 px-4 py-2.5 border border-gray-200 rounded-xl
+                           focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent
+                           text-gray-800 placeholder-gray-400"
+                aria-label="Message input"
+              />
+              <button
+                type="submit"
+                disabled={!textInput.trim()}
+                className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300
+                           text-white font-medium rounded-xl transition-colors
+                           focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                aria-label="Send message"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                </svg>
+              </button>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   );

@@ -19,6 +19,7 @@ export type SessionStatus =
 export type SpeakingState = "idle" | "user" | "assistant";
 
 export interface TranscriptEntry {
+  id: string;
   role: "user" | "assistant";
   text: string;
   timestamp: Date;
@@ -143,6 +144,7 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
     "none" | "connecting" | "connected" | "failed"
   >("none");
   const [turnBasedMode, setTurnBasedMode] = useState(false);
+  const [microphoneEnabled, setMicrophoneEnabledState] = useState(true);
 
   // Refs
   const wsRef = useRef<WebSocket | null>(null);
@@ -162,6 +164,8 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
   const shouldReconnectRef = useRef<boolean>(false);
   // Track avatar SDP negotiation to prevent duplicates
   const avatarSdpSentRef = useRef<boolean>(false);
+  // Buffer for streaming transcript deltas (O(1) push vs O(n) string concat)
+  const streamingDeltasRef = useRef<string[]>([]);
 
   // Cleanup function
   const cleanup = useCallback(() => {
@@ -565,7 +569,8 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
           case "user.speaking.started":
             // Stop any ongoing assistant audio playback (interruption)
             stopAudioPlayback();
-            // Reset streaming transcript on interruption
+            // Reset streaming transcript and delta buffer on interruption
+            streamingDeltasRef.current = [];
             setStreamingTranscript("");
             setSpeakingState("user");
             break;
@@ -597,9 +602,10 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
             break;
 
           case "transcript.delta":
-            // Streaming transcript - display word-by-word as it arrives
+            // Streaming transcript - use array buffer for O(1) append
             if (isTranscriptDeltaMessage(data)) {
-              setStreamingTranscript((prev) => prev + data.delta);
+              streamingDeltasRef.current.push(data.delta);
+              setStreamingTranscript(streamingDeltasRef.current.join(""));
             }
             break;
 
@@ -608,21 +614,24 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
             if (isTranscriptMessage(data)) {
               if (data.role === "assistant") {
                 // Finalize assistant transcript - use the authoritative text from server
-                // Reset streaming state and add the final transcript
+                // Reset streaming state and delta buffer
+                streamingDeltasRef.current = [];
                 setStreamingTranscript("");
                 setTranscripts((prev) => [
                   ...prev,
                   {
+                    id: crypto.randomUUID(),
                     role: "assistant",
                     text: data.text,
                     timestamp: new Date(),
                   },
                 ]);
               } else {
-                // User transcript - add directly
+                // User transcript - add directly with stable ID
                 setTranscripts((prev) => [
                   ...prev,
                   {
+                    id: crypto.randomUUID(),
                     role: data.role,
                     text: data.text,
                     timestamp: new Date(),
@@ -779,6 +788,7 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
       setTranscripts((prev) => [
         ...prev,
         {
+          id: crypto.randomUUID(),
           role: "user",
           text: trimmedText,
           timestamp: new Date(),
@@ -807,6 +817,32 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
       console.warn("Cannot trigger response: WebSocket not open");
     }
   }, []);
+
+  // Enable or disable microphone capture
+  const setMicrophoneEnabled = useCallback((enabled: boolean) => {
+    setMicrophoneEnabledState(enabled);
+
+    if (enabled) {
+      // Resume audio capture if connected and not already capturing
+      if (status === "connected" && !audioContextRef.current) {
+        startAudioCapture();
+      } else if (mediaStreamRef.current) {
+        // Re-enable existing tracks
+        mediaStreamRef.current.getAudioTracks().forEach(track => {
+          track.enabled = true;
+        });
+      }
+      console.log("Microphone enabled");
+    } else {
+      // Disable audio tracks (keeps connection alive but stops sending audio)
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getAudioTracks().forEach(track => {
+          track.enabled = false;
+        });
+      }
+      console.log("Microphone disabled");
+    }
+  }, [status, startAudioCapture]);
 
   // Toggle between turn-based and live voice mode
   const toggleMode = useCallback((turnBased: boolean) => {
@@ -854,10 +890,12 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
     audioStream,
     avatarStatus,
     turnBasedMode,
+    microphoneEnabled,
     connect,
     disconnect,
     sendTextMessage,
     triggerResponse,
     toggleMode,
+    setMicrophoneEnabled,
   };
 }

@@ -322,25 +322,22 @@ class VoiceAvatarSession:
         """Return current mode setting."""
         return self._turn_based_mode
 
-    async def _inject_rag_context(self, query: str) -> bool:
+    async def _inject_rag_context_background(self, query: str) -> None:
         """
-        Retrieve relevant context from Foundry Agent and inject into session instructions.
+        Background task to retrieve and inject RAG context without blocking event stream.
 
         Args:
             query: The user's query (transcribed speech or text input)
-
-        Returns:
-            True if context was injected, False otherwise
         """
         if not foundry_agent.enabled:
-            return False
+            return
 
         try:
-            # Retrieve context from Foundry Agent's knowledge base
-            context = foundry_agent.get_context(query)
+            # Run synchronous Foundry Agent call in thread pool to avoid blocking
+            context = await asyncio.to_thread(foundry_agent.get_context, query)
             if not context:
                 logger.debug("No relevant context found from Foundry Agent")
-                return False
+                return
 
             augmented_instructions = f"{self._base_instructions}\n\n{context}"
             logger.info(f"Injecting Foundry Agent context ({len(context)} chars)")
@@ -351,12 +348,35 @@ class VoiceAvatarSession:
                     "type": "session.update",
                     "session": {"instructions": augmented_instructions}
                 })
-                return True
 
         except Exception as e:
-            logger.error(f"Error injecting Foundry Agent context: {e}")
+            logger.error(f"Background RAG injection failed: {e}")
 
-        return False
+    async def _inject_rag_context(self, query: str) -> bool:
+        """
+        Fire-and-forget RAG context injection - doesn't block event processing.
+
+        Args:
+            query: The user's query (transcribed speech or text input)
+
+        Returns:
+            True if background task was started, False otherwise
+        """
+        if not foundry_agent.enabled:
+            return False
+
+        # Fire and forget - don't await, let it run in background
+        asyncio.create_task(self._inject_rag_context_background(query))
+        return True
+
+    async def _cancel_response_async(self) -> None:
+        """Fire-and-forget response cancellation."""
+        try:
+            if self.connection:
+                await self.connection.response.cancel()
+        except Exception as e:
+            # Expected errors during cancellation (e.g., response already done)
+            logger.debug(f"Response cancel (expected): {e}")
 
     async def send_avatar_sdp(self, client_sdp: str) -> None:
         """Send client SDP for avatar WebRTC connection."""
@@ -465,16 +485,13 @@ class VoiceAvatarSession:
         # Voice activity detection events
         elif event_type_str == "input_audio_buffer.speech_started":
             logger.info("User started speaking")
-            # If assistant is responding, cancel to allow interruption
+            # If assistant is responding, cancel to allow interruption (fire-and-forget)
             if self._response_in_progress and self.connection:
                 logger.info("Cancelling in-progress response (user interruption)")
-                try:
-                    await self.connection.response.cancel()
-                except Exception as e:
-                    logger.warning(f"Failed to cancel response: {e}")
-                finally:
-                    # Always reset flag to prevent stuck state
-                    self._response_in_progress = False
+                # Fire and forget - don't block event stream waiting for cancel
+                asyncio.create_task(self._cancel_response_async())
+                # Immediately mark as cancelled for responsive UI
+                self._response_in_progress = False
             return {"type": "user.speaking.started"}
 
         elif event_type_str == "input_audio_buffer.speech_stopped":
@@ -494,7 +511,7 @@ class VoiceAvatarSession:
             logger.info(f"User transcript: {transcript}")
             if transcript and transcript.strip():
                 logger.info(f"Sending user transcript to client: {transcript[:50]}...")
-                # Inject RAG context before response generation
+                # Fire-and-forget RAG context injection (returns immediately, runs in background)
                 await self._inject_rag_context(transcript)
                 return {
                     "type": "transcript",
