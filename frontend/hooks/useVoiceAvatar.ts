@@ -52,6 +52,7 @@ interface TranscriptMessage {
   type: "transcript";
   role: "user" | "assistant";
   text: string;
+  language?: string;
 }
 
 interface TranscriptDeltaMessage {
@@ -145,6 +146,7 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
   >("none");
   const [turnBasedMode, setTurnBasedMode] = useState(false);
   const [microphoneEnabled, setMicrophoneEnabledState] = useState(true);
+  const [detectedLanguage, setDetectedLanguage] = useState<string>("EN");
 
   // Refs
   const wsRef = useRef<WebSocket | null>(null);
@@ -628,6 +630,10 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
                 ]);
               } else {
                 // User transcript - add directly with stable ID
+                // Update detected language if provided
+                if (data.language) {
+                  setDetectedLanguage(data.language);
+                }
                 setTranscripts((prev) => [
                   ...prev,
                   {
@@ -891,6 +897,7 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
     avatarStatus,
     turnBasedMode,
     microphoneEnabled,
+    detectedLanguage,
     connect,
     disconnect,
     sendTextMessage,

@@ -8,6 +8,7 @@ interface InputBarProps {
   speakingState: SpeakingState;
   microphoneEnabled: boolean;
   textMode: boolean;
+  detectedLanguage: string;
   onSendMessage: (text: string) => void;
   onToggleTextMode: (enabled: boolean) => void;
 }
@@ -17,6 +18,7 @@ export default function InputBar({
   speakingState,
   microphoneEnabled,
   textMode,
+  detectedLanguage,
   onSendMessage,
   onToggleTextMode,
 }: InputBarProps) {
@@ -40,10 +42,10 @@ export default function InputBar({
   return (
     <div className="bg-white/80 backdrop-blur-md border-t border-gray-200/50 px-4 py-3">
       <form onSubmit={handleSubmit} className="flex items-center gap-3">
-        {/* Language badge (visual only) */}
+        {/* Language badge */}
         <div className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 rounded-full text-sm text-gray-600 shrink-0">
           <span className="text-xs">Detected:</span>
-          <span className="font-medium">EN</span>
+          <span className="font-medium">{detectedLanguage}</span>
           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
           </svg>

@@ -16,6 +16,7 @@ export default function VoiceAvatar() {
     audioStream,
     avatarStatus,
     microphoneEnabled,
+    detectedLanguage,
     connect,
     disconnect,
     sendTextMessage,
@@ -36,8 +37,8 @@ export default function VoiceAvatar() {
     <div className="flex flex-col h-[calc(100vh-88px)]">
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col lg:flex-row gap-6 p-6 overflow-hidden">
-        {/* Avatar Panel - 60% width on large screens */}
-        <div className="w-full lg:w-[60%] bg-white/50 backdrop-blur-md rounded-2xl border border-white/60 p-5 shadow-lg">
+        {/* Avatar Panel - 40% width on large screens */}
+        <div className="w-full lg:w-[40%] bg-white/50 backdrop-blur-md rounded-2xl border border-white/60 p-5 shadow-lg">
           <AvatarPanel
             status={status}
             avatarStatus={avatarStatus}
@@ -49,8 +50,8 @@ export default function VoiceAvatar() {
           />
         </div>
 
-        {/* Chat Panel - 40% width on large screens */}
-        <div className="w-full lg:w-[40%] flex-1 lg:flex-none shadow-lg">
+        {/* Chat Panel - 60% width on large screens */}
+        <div className="w-full lg:w-[60%] flex-1 lg:flex-none shadow-lg">
           <ChatPanel
             transcripts={transcripts}
             streamingTranscript={streamingTranscript}
@@ -68,6 +69,7 @@ export default function VoiceAvatar() {
         speakingState={speakingState}
         microphoneEnabled={microphoneEnabled}
         textMode={textMode}
+        detectedLanguage={detectedLanguage}
         onSendMessage={sendTextMessage}
         onToggleTextMode={handleTextModeToggle}
       />

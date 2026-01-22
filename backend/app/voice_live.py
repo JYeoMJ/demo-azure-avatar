@@ -30,6 +30,31 @@ from .foundry_agent import foundry_agent
 
 logger = logging.getLogger(__name__)
 
+
+def detect_language(text: str) -> str:
+    """Detect language from text using Unicode character ranges."""
+    if not text:
+        return "EN"
+
+    for char in text:
+        code = ord(char)
+        # Chinese (CJK Unified Ideographs)
+        if 0x4E00 <= code <= 0x9FFF:
+            return "ZH"
+        # Tamil
+        if 0x0B80 <= code <= 0x0BFF:
+            return "TA"
+        # Japanese Hiragana/Katakana
+        if 0x3040 <= code <= 0x30FF:
+            return "JA"
+        # Korean Hangul
+        if 0xAC00 <= code <= 0xD7AF or 0x1100 <= code <= 0x11FF:
+            return "KO"
+
+    # Default to English for Latin text
+    return "EN"
+
+
 # Error codes that are expected during normal operation and should not be forwarded to client
 # These typically occur due to race conditions that are inherent to real-time voice interactions
 EXPECTED_ERROR_CODES = {
@@ -526,7 +551,8 @@ class VoiceAvatarSession:
                 return {
                     "type": "transcript",
                     "role": "user",
-                    "text": transcript
+                    "text": transcript,
+                    "language": detect_language(transcript)
                 }
             return None
 
