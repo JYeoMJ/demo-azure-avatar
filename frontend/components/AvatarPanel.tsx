@@ -109,7 +109,7 @@ export default function AvatarPanel({
   const statusConfig = getStatusConfig();
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full items-center">
       {/* Title */}
       <h2 className="text-lg font-semibold text-[#1E3A5F] mb-4">
         Ask me anything about our DA SWAT team & projects
@@ -117,7 +117,7 @@ export default function AvatarPanel({
 
       {/* Video Container */}
       <div
-        className="relative flex-1 min-h-[350px] bg-gradient-to-br from-[#B8CCE8] via-[#C8D8F0] to-[#D4E0F4] rounded-2xl overflow-hidden shadow-inner"
+        className="relative w-full max-w-md aspect-square bg-gradient-to-br from-[#B8CCE8] via-[#C8D8F0] to-[#D4E0F4] rounded-2xl overflow-hidden shadow-inner"
         role="region"
         aria-label="AI Avatar video display"
       >
@@ -126,7 +126,8 @@ export default function AvatarPanel({
             ref={videoRef}
             autoPlay
             playsInline
-            className="w-full h-full object-cover"
+            className="w-full h-full object-contain"
+            style={{ backgroundColor: "#C8D8F0" }}
             aria-label="AI Avatar video stream"
           />
         ) : (
