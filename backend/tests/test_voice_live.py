@@ -266,6 +266,39 @@ class TestSessionConfiguration:
             assert config.turn_detection.create_response is False
             assert config.turn_detection.silence_duration_ms == 800
 
+    def test_build_session_config_uses_semantic_vad(self):
+        """Session config should use AzureSemanticVadMultilingual with EOU detection."""
+        from azure.ai.voicelive.models import (
+            AzureSemanticVadMultilingual,
+            AzureSemanticDetectionMultilingual,
+        )
+
+        with patch("app.voice_live.settings") as mock_settings:
+            mock_settings.VOICE_NAME = "en-US-JennyNeural"
+            mock_settings.TURN_BASED_MODE = False
+            mock_settings.ASSISTANT_INSTRUCTIONS = "You are a helpful assistant."
+            mock_settings.AVATAR_CHARACTER = "lisa"
+            mock_settings.AVATAR_STYLE = "casual-sitting"
+            mock_settings.AVATAR_CUSTOMIZED = False
+            mock_settings.AVATAR_BASE_MODEL = None
+            mock_settings.AVATAR_VIDEO_BITRATE = 2000000
+            mock_settings.INPUT_LANGUAGES = "en"
+            mock_settings.MAX_RESPONSE_TOKENS = 4096
+
+            session = VoiceAvatarSession()
+            config = session._build_session_config()
+
+            # Verify semantic VAD type
+            assert isinstance(config.turn_detection, AzureSemanticVadMultilingual)
+            assert config.turn_detection.threshold == 0.5
+            assert config.turn_detection.prefix_padding_ms == 300
+
+            # Verify EOU detection configuration
+            eou = config.turn_detection.end_of_utterance_detection
+            assert isinstance(eou, AzureSemanticDetectionMultilingual)
+            assert eou.threshold_level == "medium"
+            assert eou.timeout_ms == 1000
+
 
 class TestAvatarConnection:
     """Tests for avatar WebRTC connection flow."""

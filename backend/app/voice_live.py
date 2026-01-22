@@ -17,7 +17,8 @@ from azure.identity import DefaultAzureCredential
 from azure.ai.voicelive.aio import connect, VoiceLiveConnection
 from azure.ai.voicelive.models import (
     RequestSession,
-    ServerVad,
+    AzureSemanticVadMultilingual,
+    AzureSemanticDetectionMultilingual,
     AzureStandardVoice,
     Modality,
     InputAudioFormat,
@@ -141,13 +142,20 @@ class VoiceAvatarSession:
         else:
             voice_config = settings.VOICE_NAME
 
-        # Turn detection (VAD) configuration
+        # Semantic end-of-utterance detection
+        eou_detection = AzureSemanticDetectionMultilingual(
+            threshold_level="medium",
+            timeout_ms=1000,
+        )
+
+        # Semantic VAD with multilingual support
         # In turn-based mode, disable auto-response so user must explicitly trigger
-        turn_detection = ServerVad(
+        turn_detection = AzureSemanticVadMultilingual(
             threshold=0.5,
             prefix_padding_ms=300,
             silence_duration_ms=800 if self._turn_based_mode else 500,
             create_response=not self._turn_based_mode,  # Disable auto-response in turn-based mode
+            end_of_utterance_detection=eou_detection,
         )
 
         # Avatar configuration (must match Azure VoiceLive format)
@@ -380,11 +388,16 @@ class VoiceAvatarSession:
 
             # Update session turn detection configuration
             turn_detection_config = {
-                "type": "server_vad",
+                "type": "azure_semantic_vad_multilingual",
                 "threshold": 0.5,
                 "prefix_padding_ms": 300,
                 "silence_duration_ms": 800 if turn_based else 500,
                 "create_response": not turn_based,
+                "end_of_utterance_detection": {
+                    "type": "azure_semantic_detection_multilingual",
+                    "threshold_level": "medium",
+                    "timeout_ms": 1000,
+                },
             }
 
             await self.connection.send(
