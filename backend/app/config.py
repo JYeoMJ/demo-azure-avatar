@@ -38,9 +38,10 @@ class Settings:
     USE_TOKEN_CREDENTIAL: bool = os.getenv("USE_TOKEN_CREDENTIAL", "false").lower() == "true"
 
     # Avatar configuration
-    AVATAR_CHARACTER: str = os.getenv("AVATAR_CHARACTER", "lisa")
-    AVATAR_STYLE: str = os.getenv("AVATAR_STYLE", "casual-sitting")
-    AVATAR_CUSTOMIZED: bool = os.getenv("AVATAR_CUSTOMIZED", "false").lower() == "true"
+    AVATAR_CHARACTER: str = os.getenv("AVATAR_CHARACTER", "Beatriz")
+    AVATAR_STYLE: str = os.getenv("AVATAR_STYLE", "")
+    AVATAR_CUSTOMIZED: bool = os.getenv("AVATAR_CUSTOMIZED", "true").lower() == "true"
+    AVATAR_BASE_MODEL: str = os.getenv("AVATAR_BASE_MODEL", "vasa-1")  # Required for photo/custom avatars
 
     # Video settings
     AVATAR_VIDEO_BITRATE: int = int(os.getenv("AVATAR_VIDEO_BITRATE", "2000000"))
@@ -83,7 +84,11 @@ class Settings:
         logger.info("=== Voice Avatar Configuration ===")
         logger.info(f"  Endpoint: {self.VOICELIVE_ENDPOINT}")
         logger.info(f"  Model: {self.VOICELIVE_MODEL}")
-        logger.info(f"  Avatar: {self.AVATAR_CHARACTER}/{self.AVATAR_STYLE}")
+        # Log avatar type based on configuration
+        if self.AVATAR_BASE_MODEL:
+            logger.info(f"  Avatar: {self.AVATAR_CHARACTER} (photo-avatar, {self.AVATAR_BASE_MODEL})")
+        else:
+            logger.info(f"  Avatar: {self.AVATAR_CHARACTER}/{self.AVATAR_STYLE} (video-avatar)")
         logger.info(f"  Voice: {self.VOICE_NAME}")
         logger.info(f"  Input languages: {self.INPUT_LANGUAGES}")
         logger.info(f"  Video: {self.AVATAR_VIDEO_CODEC} @ {self.AVATAR_VIDEO_BITRATE} bps")

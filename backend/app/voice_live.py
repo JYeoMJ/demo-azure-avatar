@@ -110,20 +110,30 @@ class VoiceAvatarSession:
         )
 
         # Avatar configuration (must match Azure VoiceLive format)
+        # Photo avatars require different config than video avatars
+        is_photo_avatar = bool(settings.AVATAR_BASE_MODEL)
+
         avatar_config = {
             "character": settings.AVATAR_CHARACTER,
-            "customized": settings.AVATAR_CUSTOMIZED,
+            "customized": settings.AVATAR_CUSTOMIZED or is_photo_avatar,  # Photo avatars need customized=true
             "video": {
                 "resolution": {
-                    "width": 1280,
-                    "height": 720
+                    "width": 512 if is_photo_avatar else 1280,
+                    "height": 512 if is_photo_avatar else 720
                 },
                 "bitrate": settings.AVATAR_VIDEO_BITRATE,
             }
         }
-        # Style is optional - only add if set
-        if settings.AVATAR_STYLE:
-            avatar_config["style"] = settings.AVATAR_STYLE
+
+        # Photo avatar specific config
+        if is_photo_avatar:
+            avatar_config["type"] = "photo-avatar"
+            avatar_config["model"] = settings.AVATAR_BASE_MODEL  # e.g., "vasa-1"
+        else:
+            avatar_config["type"] = "video-avatar"
+            # Style only for video avatars
+            if settings.AVATAR_STYLE:
+                avatar_config["style"] = settings.AVATAR_STYLE
 
         # Input transcription with multi-language auto-detection
         # Supports: whisper-1, gpt-4o-transcribe, gpt-4o-mini-transcribe, azure-speech

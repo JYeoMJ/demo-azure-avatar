@@ -79,8 +79,9 @@ Create `backend/.env` from `.env.example`:
 | `USE_TOKEN_CREDENTIAL` | No | `false` | Use DefaultAzureCredential instead of API key |
 | `VOICELIVE_MODEL` | No | `gpt-4o-realtime-preview` | AI model |
 | `AVATAR_CHARACTER` | No | `lisa` | Avatar character |
-| `AVATAR_STYLE` | No | `casual-sitting` | Avatar style |
+| `AVATAR_STYLE` | No | `casual-sitting` | Avatar style (video avatars only) |
 | `AVATAR_CUSTOMIZED` | No | `false` | Use customized avatar |
+| `AVATAR_BASE_MODEL` | No | *(empty)* | Base model for photo avatars (e.g., `vasa-1`) |
 | `AVATAR_VIDEO_BITRATE` | No | `2000000` | Video bitrate (bps) |
 | `VOICE_NAME` | No | `en-US-Ava:DragonHDLatestNeural` | TTS voice |
 | `INPUT_LANGUAGES` | No | `en,zh,ms,ta` | Comma-separated language codes |
@@ -184,7 +185,9 @@ voice-avatar/
 
 ## Avatar Configuration
 
-### Standard Characters
+### Video Avatars
+
+Video avatars require both a character and style. Resolution: 1280x720.
 
 | Character | Description |
 |-----------|-------------|
@@ -193,7 +196,7 @@ voice-avatar/
 | `jenny` | Female, professional appearance |
 | `guy` | Male, casual appearance |
 
-### Standard Styles
+#### Styles (Video Avatars Only)
 
 | Style | Description |
 |-------|-------------|
@@ -201,9 +204,36 @@ voice-avatar/
 | `graceful-sitting` | Elegant seated position |
 | `technical-sitting` | Professional seated position |
 
+### Photo Avatars
+
+Photo avatars use a static image with lip-sync animation powered by VASA-1. They require different configuration than video avatars:
+
+| Setting | Value |
+|---------|-------|
+| `AVATAR_STYLE` | *(leave empty)* |
+| `AVATAR_CUSTOMIZED` | `true` |
+| `AVATAR_BASE_MODEL` | `vasa-1` |
+| Resolution | 512x512 |
+
+**Example configuration for Sakura:**
+```bash
+AVATAR_CHARACTER=Sakura
+AVATAR_STYLE=
+AVATAR_CUSTOMIZED=true
+AVATAR_BASE_MODEL=vasa-1
+```
+
+| Character | Description |
+|-----------|-------------|
+| `Sakura` | Female, Asian appearance |
+| `Matteo` | Male, European appearance |
+| `Harry` | Male, professional appearance |
+| `Meg` | Female, casual appearance |
+| `Gabrielle` | Female, professional appearance |
+
 ### Video Settings
 
-- Resolution: 1280x720 (fixed)
+- Resolution: 1280x720 (video avatars) / 512x512 (photo avatars)
 - Bitrate: Configurable via `AVATAR_VIDEO_BITRATE`
 - Codec: H.264
 
@@ -212,9 +242,11 @@ See [Azure Avatar documentation](https://learn.microsoft.com/en-us/azure/ai-serv
 ## Troubleshooting
 
 ### `avatar_verification_failed`
-Avatar character doesn't exist in your Speech resource region. Verify:
+Avatar character doesn't exist or is misconfigured. Verify:
 - Your resource is in an avatar-supported region
-- Character name is correct (case-sensitive, e.g., `lisa` not `Lisa`)
+- Character name is correct (case-sensitive, e.g., `Sakura` not `sakura`)
+- Photo avatars require `AVATAR_BASE_MODEL=vasa-1` and `AVATAR_CUSTOMIZED=true`
+- Video avatars require a valid `AVATAR_STYLE` (e.g., `casual-sitting`)
 
 ### SDP/WebRTC Timeout
 - Verify SDP is being sent as base64-encoded JSON
