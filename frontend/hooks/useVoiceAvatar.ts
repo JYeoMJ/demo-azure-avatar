@@ -131,6 +131,11 @@ function isErrorMessage(data: unknown): data is ErrorMessage {
 const DEFAULT_WS_URL =
   process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws/voice-avatar";
 
+// Timeout constants for stability
+const WS_CONNECT_TIMEOUT_MS = 15000; // 15 seconds for WebSocket connection
+const ICE_GATHERING_TIMEOUT_MS = 3000; // 3 seconds for ICE gathering (don't wait for complete)
+const WEBRTC_RECOVERY_TIMEOUT_MS = 5000; // 5 seconds before treating disconnected as failed
+
 export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
   const { wsUrl = DEFAULT_WS_URL, onError, maxReconnectAttempts = 5 } = options;
 
@@ -168,9 +173,17 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
   const avatarSdpSentRef = useRef<boolean>(false);
   // Buffer for streaming transcript deltas (O(1) push vs O(n) string concat)
   const streamingDeltasRef = useRef<string[]>([]);
+  // WebRTC recovery timeout for handling "disconnected" state
+  const webrtcRecoveryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Cleanup function
   const cleanup = useCallback(() => {
+    // Clear any pending WebRTC recovery timeout
+    if (webrtcRecoveryTimeoutRef.current) {
+      clearTimeout(webrtcRecoveryTimeoutRef.current);
+      webrtcRecoveryTimeoutRef.current = null;
+    }
+
     // Stop audio processing
     if (processorRef.current) {
       processorRef.current.disconnect();
@@ -326,6 +339,31 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
 
     pc.onconnectionstatechange = () => {
       console.log("Connection state:", pc.connectionState);
+
+      // Clear any pending recovery timeout
+      if (webrtcRecoveryTimeoutRef.current) {
+        clearTimeout(webrtcRecoveryTimeoutRef.current);
+        webrtcRecoveryTimeoutRef.current = null;
+      }
+
+      if (pc.connectionState === "failed") {
+        // Fatal error - WebRTC connection cannot be recovered
+        console.error("WebRTC connection failed");
+        setAvatarStatus("failed");
+        // Continue with voice-only mode
+      } else if (pc.connectionState === "disconnected") {
+        // May recover - wait before treating as failed
+        console.warn("WebRTC disconnected - may recover, waiting...");
+        webrtcRecoveryTimeoutRef.current = setTimeout(() => {
+          if (peerConnectionRef.current?.connectionState === "disconnected") {
+            console.error("WebRTC did not recover from disconnected state");
+            setAvatarStatus("failed");
+          }
+        }, WEBRTC_RECOVERY_TIMEOUT_MS);
+      } else if (pc.connectionState === "connected") {
+        console.log("WebRTC connection established");
+        setAvatarStatus("connected");
+      }
     };
 
     pc.onicegatheringstatechange = () => {
@@ -344,6 +382,18 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
       }
     };
 
+    // ICE candidate error handler - error code 701 means no STUN/TURN contact
+    pc.addEventListener("icecandidateerror", (event: Event) => {
+      const iceEvent = event as RTCPeerConnectionIceErrorEvent;
+      console.error("ICE candidate error:", iceEvent.errorCode, iceEvent.errorText);
+      if (iceEvent.errorCode === 701) {
+        // Fatal - cannot reach ICE servers
+        console.error("Cannot contact ICE servers - avatar will fail");
+        // Don't immediately set failed - let the connection attempt complete
+        // The connectionState handler will catch the eventual failure
+      }
+    });
+
     peerConnectionRef.current = pc;
     console.log("===================");
     return pc;
@@ -358,25 +408,33 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
       await pc.setLocalDescription(offer);
       console.log("Local description set");
 
-      // Wait for ICE gathering to complete
-      console.log("Waiting for ICE gathering...");
+      // Wait for ICE gathering with timeout - don't wait for "complete" indefinitely
+      // Chrome uses 10s timeout per interface, can take 30s+ with multiple interfaces
+      console.log("Waiting for ICE gathering (with timeout)...");
       await new Promise<void>((resolve) => {
         if (pc.iceGatheringState === "complete") {
           resolve();
-        } else {
-          const checkState = () => {
-            if (pc.iceGatheringState === "complete") {
-              // Clean up listener to prevent memory leak
-              pc.removeEventListener("icegatheringstatechange", checkState);
-              resolve();
-            }
-          };
-          // Use addEventListener instead of direct assignment to prevent overwriting
-          pc.addEventListener("icegatheringstatechange", checkState);
+          return;
         }
+
+        // Set up timeout - don't wait forever for ICE gathering
+        const timeout = setTimeout(() => {
+          console.log("ICE gathering timeout - proceeding with available candidates");
+          pc.removeEventListener("icegatheringstatechange", checkState);
+          resolve();
+        }, ICE_GATHERING_TIMEOUT_MS);
+
+        const checkState = () => {
+          if (pc.iceGatheringState === "complete") {
+            clearTimeout(timeout);
+            pc.removeEventListener("icegatheringstatechange", checkState);
+            resolve();
+          }
+        };
+        pc.addEventListener("icegatheringstatechange", checkState);
       });
 
-      console.log("ICE gathering complete, sending SDP to backend");
+      console.log("ICE gathering done/timeout, sending SDP to backend");
       console.log("SDP length:", pc.localDescription?.sdp?.length, "chars");
 
       // Send SDP to backend
@@ -751,19 +809,46 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
-      ws.onopen = () => {
-        console.log("WebSocket connected");
-        reconnectAttemptsRef.current = 0;
-        // Session setup happens automatically on backend
-      };
+      // Create a connection timeout promise
+      const connectionTimeout = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error("WebSocket connection timeout"));
+        }, WS_CONNECT_TIMEOUT_MS);
+      });
+
+      // Create a promise that resolves when WebSocket opens
+      const connectionPromise = new Promise<void>((resolve, reject) => {
+        ws.onopen = () => {
+          console.log("WebSocket connected");
+          reconnectAttemptsRef.current = 0;
+          resolve();
+        };
+
+        ws.onerror = (error) => {
+          console.error("WebSocket error:", error);
+          reject(new Error("WebSocket connection failed"));
+        };
+      });
+
+      // Race between connection and timeout
+      try {
+        await Promise.race([connectionPromise, connectionTimeout]);
+      } catch (timeoutError) {
+        console.error("Connection timeout or error:", timeoutError);
+        onError?.(timeoutError instanceof Error ? timeoutError.message : "Connection failed");
+        setStatus("error");
+        ws.close();
+        cleanup();
+        return;
+      }
 
       ws.onmessage = handleMessage;
 
+      // Re-attach error handler for post-connection errors
       ws.onerror = (error) => {
         console.error("WebSocket error:", error);
         onError?.("WebSocket connection failed");
         setStatus("error");
-        // Cleanup resources on error to prevent leaks
         cleanup();
       };
 

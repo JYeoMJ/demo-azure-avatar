@@ -6,9 +6,13 @@ Supports both full agent processing (for text chat) and retrieval-only (for live
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Optional, Any
 
 from azure.ai.agents import AgentsClient
+
+# Timeout for Foundry Agent operations
+FOUNDRY_OPERATION_TIMEOUT = 30.0  # 30 seconds
 from azure.ai.agents.models import ListSortOrder
 from azure.identity import DefaultAzureCredential
 
@@ -29,6 +33,8 @@ class FoundryAgentService:
         self._client: Optional[AgentsClient] = None
         self._agent: Any = None  # Agent object from get_agent()
         self._initialized = False
+        # Thread pool for timeout-protected operations
+        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="foundry")
 
     @property
     def enabled(self) -> bool:
@@ -156,10 +162,20 @@ class FoundryAgentService:
                 thread_id=thread.id, role="user", content=query
             )
 
-            # Run the agent
-            run = self._client.runs.create_and_process(
-                thread_id=thread.id, agent_id=self._agent.id
-            )
+            # Run the agent with timeout to prevent hanging
+            try:
+                future = self._executor.submit(
+                    self._client.runs.create_and_process,
+                    thread_id=thread.id,
+                    agent_id=self._agent.id,
+                )
+                run = future.result(timeout=FOUNDRY_OPERATION_TIMEOUT)
+            except FuturesTimeoutError:
+                logger.error(f"Agent run timed out after {FOUNDRY_OPERATION_TIMEOUT}s")
+                return None
+            except Exception as e:
+                logger.error(f"Agent run failed: {e}")
+                return None
 
             if run.status == "failed":
                 logger.error(f"Agent run failed: {run.last_error}")
@@ -246,9 +262,20 @@ class FoundryAgentService:
                 thread_id=active_thread_id, role="user", content=context_query
             )
 
-            run = self._client.runs.create_and_process(
-                thread_id=active_thread_id, agent_id=self._agent.id
-            )
+            # Run with timeout to prevent hanging
+            try:
+                future = self._executor.submit(
+                    self._client.runs.create_and_process,
+                    thread_id=active_thread_id,
+                    agent_id=self._agent.id,
+                )
+                run = future.result(timeout=FOUNDRY_OPERATION_TIMEOUT)
+            except FuturesTimeoutError:
+                logger.error(f"Context retrieval timed out after {FOUNDRY_OPERATION_TIMEOUT}s")
+                return None
+            except Exception as e:
+                logger.error(f"Context retrieval run failed: {e}")
+                return None
 
             if run.status == "failed":
                 logger.error(f"Context retrieval failed: {run.last_error}")
@@ -281,6 +308,8 @@ class FoundryAgentService:
 
     def cleanup(self) -> None:
         """Clean up resources (call on shutdown if needed)."""
+        if self._executor:
+            self._executor.shutdown(wait=False)
         logger.info("Foundry Agent service cleanup complete")
 
 

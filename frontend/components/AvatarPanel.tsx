@@ -18,7 +18,7 @@ function SpeakingIndicator({ state }: { state: SpeakingState }) {
 
   return (
     <div
-      className="absolute bottom-16 left-4 flex items-center gap-2 bg-black/60 px-3 py-2 rounded-full backdrop-blur-sm"
+      className="absolute bottom-16 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-black/60 px-3 py-2 rounded-full backdrop-blur-sm"
       role="status"
       aria-live="polite"
     >
@@ -50,18 +50,32 @@ export default function AvatarPanel({
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
-  // Attach video stream
+  // Attach video stream with cleanup
   useEffect(() => {
-    if (videoRef.current && videoStream) {
-      videoRef.current.srcObject = videoStream;
+    const videoEl = videoRef.current;
+    if (videoEl && videoStream) {
+      videoEl.srcObject = videoStream;
     }
+    // Cleanup on unmount or stream change to prevent memory leaks
+    return () => {
+      if (videoEl) {
+        videoEl.srcObject = null;
+      }
+    };
   }, [videoStream]);
 
-  // Attach audio stream
+  // Attach audio stream with cleanup
   useEffect(() => {
-    if (audioRef.current && audioStream) {
-      audioRef.current.srcObject = audioStream;
+    const audioEl = audioRef.current;
+    if (audioEl && audioStream) {
+      audioEl.srcObject = audioStream;
     }
+    // Cleanup on unmount or stream change to prevent memory leaks
+    return () => {
+      if (audioEl) {
+        audioEl.srcObject = null;
+      }
+    };
   }, [audioStream]);
 
   const isConnected = status === "connected";

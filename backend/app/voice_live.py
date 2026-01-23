@@ -93,6 +93,13 @@ def _decode_server_sdp(server_sdp_raw: Optional[str]) -> Optional[str]:
         return server_sdp_raw
 
 
+# Timeout constants for Azure SDK operations
+SESSION_UPDATE_TIMEOUT = 15.0  # Timeout for session.update()
+SEND_TIMEOUT = 10.0  # Timeout for connection.send() calls
+DISCONNECT_TIMEOUT = 5.0  # Timeout for disconnect operations
+EVENT_QUEUE_MAXSIZE = 100  # Prevent unbounded memory growth
+
+
 class VoiceAvatarSession:
     """
     Manages a VoiceLive session with avatar integration.
@@ -108,9 +115,11 @@ class VoiceAvatarSession:
     def __init__(self):
         self.connection: Optional[VoiceLiveConnection] = None
         self._connection_cm = None  # Store context manager for proper cleanup
-        self.session_ready = False
+        # Use asyncio.Event for thread-safe session ready signaling
+        self._session_ready_event = asyncio.Event()
         self.avatar_ice_servers: list[dict] = []
-        self._event_queue: asyncio.Queue = asyncio.Queue()
+        # Bound queue to prevent memory growth if client disconnects
+        self._event_queue: asyncio.Queue = asyncio.Queue(maxsize=EVENT_QUEUE_MAXSIZE)
         self._response_in_progress = False
         self._turn_based_mode = settings.TURN_BASED_MODE
         self._base_instructions = settings.ASSISTANT_INSTRUCTIONS
@@ -124,6 +133,47 @@ class VoiceAvatarSession:
         self._recent_user_messages: list[str] = []  # Last 3 messages for context
         # Initialize Foundry Agent if enabled
         foundry_agent.initialize()
+
+    @property
+    def session_ready(self) -> bool:
+        """Check if session is ready (thread-safe via asyncio.Event)."""
+        return self._session_ready_event.is_set()
+
+    def _set_session_ready(self) -> None:
+        """Mark session as ready (thread-safe)."""
+        self._session_ready_event.set()
+
+    def _clear_session_ready(self) -> None:
+        """Mark session as not ready (thread-safe)."""
+        self._session_ready_event.clear()
+
+    async def _send_with_timeout(self, message: dict, timeout: float = SEND_TIMEOUT) -> bool:
+        """
+        Send a message to VoiceLive with timeout protection.
+
+        Args:
+            message: The message dict to send
+            timeout: Timeout in seconds (default: SEND_TIMEOUT)
+
+        Returns:
+            True if sent successfully, False if timed out or failed
+        """
+        if not self.connection:
+            logger.warning("Cannot send: no connection")
+            return False
+
+        try:
+            await asyncio.wait_for(
+                self.connection.send(message),
+                timeout=timeout,
+            )
+            return True
+        except asyncio.TimeoutError:
+            logger.error(f"Send timed out after {timeout}s for message type: {message.get('type', 'unknown')}")
+            return False
+        except Exception as e:
+            logger.error(f"Send failed: {e}")
+            return False
 
     def _get_credential(self) -> Union[AzureKeyCredential, TokenCredential]:
         """Get the appropriate credential based on configuration."""
@@ -239,7 +289,15 @@ class VoiceAvatarSession:
             f"Session config: voice={settings.VOICE_NAME}, "
             f"input_langs={settings.INPUT_LANGUAGES}, max_tokens={settings.MAX_RESPONSE_TOKENS}"
         )
-        await self.connection.session.update(session=session_config)
+        # Add timeout to prevent hanging if Azure doesn't respond
+        try:
+            await asyncio.wait_for(
+                self.connection.session.update(session=session_config),
+                timeout=SESSION_UPDATE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"Session update timed out after {SESSION_UPDATE_TIMEOUT}s")
+            raise RuntimeError("Session configuration timed out")
 
         logger.info("VoiceLive session configured, waiting for session.updated event")
 
@@ -296,7 +354,7 @@ class VoiceAvatarSession:
                 self._recent_user_messages.pop(0)
 
             # Create user message conversation item
-            await self.connection.send(
+            if not await self._send_with_timeout(
                 {
                     "type": "conversation.item.create",
                     "item": {
@@ -305,7 +363,9 @@ class VoiceAvatarSession:
                         "content": [{"type": "input_text", "text": text}],
                     },
                 }
-            )
+            ):
+                logger.error("Failed to send user message")
+                return False
 
             # In turn-based mode with Foundry Agent, use agent for full response
             if self._turn_based_mode and foundry_agent.enabled:
@@ -316,7 +376,7 @@ class VoiceAvatarSession:
                     logger.info(f"Foundry Agent response: {response_text[:100]}...")
                     # Create assistant message with the pre-generated response
                     # VoiceLive will render this as TTS with avatar
-                    await self.connection.send(
+                    if not await self._send_with_timeout(
                         {
                             "type": "conversation.item.create",
                             "item": {
@@ -325,9 +385,13 @@ class VoiceAvatarSession:
                                 "content": [{"type": "text", "text": response_text}],
                             },
                         }
-                    )
+                    ):
+                        logger.error("Failed to send assistant message")
+                        return False
                     # Trigger response to render the assistant message as audio
-                    await self.connection.send({"type": "response.create"})
+                    if not await self._send_with_timeout({"type": "response.create"}):
+                        logger.error("Failed to trigger response")
+                        return False
                     return True
                 else:
                     # Foundry Agent failed, fall back to VoiceLive's LLM
@@ -337,7 +401,9 @@ class VoiceAvatarSession:
 
             # Default: inject context and let VoiceLive generate response
             await self._inject_rag_context(text)
-            await self.connection.send({"type": "response.create"})
+            if not await self._send_with_timeout({"type": "response.create"}):
+                logger.error("Failed to create response")
+                return False
             return True
 
         except Exception as e:
@@ -360,7 +426,9 @@ class VoiceAvatarSession:
 
         try:
             logger.info("Manually triggering assistant response")
-            await self.connection.send({"type": "response.create"})
+            if not await self._send_with_timeout({"type": "response.create"}):
+                logger.error("Trigger response timed out")
+                return False
             return True
         except Exception as e:
             logger.error(f"Error triggering response: {e}")
@@ -400,12 +468,14 @@ class VoiceAvatarSession:
                 },
             }
 
-            await self.connection.send(
+            if not await self._send_with_timeout(
                 {
                     "type": "session.update",
                     "session": {"turn_detection": turn_detection_config},
                 }
-            )
+            ):
+                logger.error("Failed to update session mode")
+                return False
             return True
         except Exception as e:
             logger.error(f"Error setting mode: {e}")
@@ -489,12 +559,13 @@ class VoiceAvatarSession:
 
                     # Update session with augmented instructions
                     if self.connection and self.session_ready:
-                        await self.connection.send(
+                        if not await self._send_with_timeout(
                             {
                                 "type": "session.update",
                                 "session": {"instructions": augmented_instructions},
                             }
-                        )
+                        ):
+                            logger.warning("Failed to inject RAG context (timeout)")
 
                 except Exception as e:
                     logger.error(f"Background RAG injection failed: {e}")
@@ -533,23 +604,33 @@ class VoiceAvatarSession:
             # Expected errors during cancellation (e.g., response already done)
             logger.debug(f"Response cancel (expected): {e}")
 
-    async def send_avatar_sdp(self, client_sdp: str) -> None:
-        """Send client SDP for avatar WebRTC connection."""
+    async def send_avatar_sdp(self, client_sdp: str) -> bool:
+        """
+        Send client SDP for avatar WebRTC connection.
+
+        Returns:
+            True if sent successfully, False otherwise
+        """
         if self.connection:
             logger.info(f"Sending avatar SDP offer (length: {len(client_sdp)} chars)")
             # Encode SDP as base64 JSON (required by Azure VoiceLive)
             encoded_sdp = _encode_client_sdp(client_sdp)
             logger.debug(f"Encoded SDP length: {len(encoded_sdp)} chars")
-            await self.connection.send(
+            if await self._send_with_timeout(
                 {
                     "type": "session.avatar.connect",
                     "client_sdp": encoded_sdp,
                     "rtc_configuration": {"bundle_policy": "max-bundle"},
                 }
-            )
-            logger.info("Avatar connect message sent successfully")
+            ):
+                logger.info("Avatar connect message sent successfully")
+                return True
+            else:
+                logger.error("Avatar connect message timed out")
+                return False
         else:
             logger.error("Cannot send avatar SDP: no connection")
+            return False
 
     async def process_events(self) -> AsyncGenerator[dict, None]:
         """
@@ -580,7 +661,7 @@ class VoiceAvatarSession:
 
         # Session events
         if event_type_str == "session.updated":
-            self.session_ready = True
+            self._set_session_ready()
             # Extract ICE servers if provided
             ice_servers_list = []
             if hasattr(event, "session") and hasattr(event.session, "avatar"):
@@ -822,7 +903,7 @@ class VoiceAvatarSession:
             finally:
                 self._connection_cm = None
                 self.connection = None
-                self.session_ready = False
+                self._clear_session_ready()
         elif self.connection:
             # Fallback if connection was created without context manager
             try:
@@ -832,5 +913,5 @@ class VoiceAvatarSession:
                 logger.error(f"Error disconnecting: {e}")
             finally:
                 self.connection = None
-                self.session_ready = False
+                self._clear_session_ready()
         logger.info("Disconnected from VoiceLive")

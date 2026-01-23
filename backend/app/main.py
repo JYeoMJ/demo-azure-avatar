@@ -24,6 +24,8 @@ MAX_AUDIO_CHUNK_SIZE = 100 * 1024  # 100KB max for audio chunks
 MAX_SDP_SIZE = 10 * 1024  # 10KB max for SDP
 MAX_TEXT_INPUT_SIZE = 4096  # 4KB max for text input
 WEBSOCKET_IDLE_TIMEOUT = 60.0  # 60 seconds idle timeout for client messages
+WEBSOCKET_ACCEPT_TIMEOUT = 10.0  # 10 seconds timeout for WebSocket accept
+MAX_ACTIVE_SESSIONS = 50  # Prevent resource exhaustion
 
 
 class RateLimiter:
@@ -32,13 +34,17 @@ class RateLimiter:
     def __init__(self, max_messages: int = 100, window_seconds: float = 1.0):
         self.max_messages = max_messages
         self.window = window_seconds
-        self.messages: list[float] = []
+        # Use collections.deque for O(1) append/popleft instead of list filtering
+        from collections import deque
+        self.messages: deque[float] = deque(maxlen=max_messages * 2)  # Bounded
 
     def allow(self) -> bool:
         """Check if a message is allowed under the rate limit."""
         now = time.time()
-        # Remove messages outside the window
-        self.messages = [t for t in self.messages if now - t < self.window]
+        cutoff = now - self.window
+        # Remove messages outside the window (from the front)
+        while self.messages and self.messages[0] < cutoff:
+            self.messages.popleft()
         if len(self.messages) >= self.max_messages:
             return False
         self.messages.append(now)
@@ -143,7 +149,19 @@ async def voice_avatar_websocket(websocket: WebSocket):
     - Client sends audio chunks as base64
     - Server forwards VoiceLive events (transcripts, status updates)
     """
-    await websocket.accept()
+    # Check session limit before accepting
+    if len(active_sessions) >= MAX_ACTIVE_SESSIONS:
+        logger.warning(f"Rejecting connection: max sessions ({MAX_ACTIVE_SESSIONS}) reached")
+        await websocket.close(code=1013, reason="Server at capacity")
+        return
+
+    # Accept with timeout
+    try:
+        await asyncio.wait_for(websocket.accept(), timeout=WEBSOCKET_ACCEPT_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.error("WebSocket accept timed out")
+        return
+
     session_id = id(websocket)
     active_sessions.add(session_id)
     logger.info(
@@ -215,21 +233,42 @@ async def voice_avatar_websocket(websocket: WebSocket):
                 break
             except json.JSONDecodeError as e:
                 logger.error(f"Invalid JSON from client: {e}")
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "message": "Invalid JSON format",
-                        "code": "invalid_json",
-                    }
-                )
+                try:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": "Invalid JSON format",
+                            "code": "invalid_json",
+                        }
+                    )
+                except Exception:
+                    pass
             except Exception as e:
                 logger.error(f"Error handling client message: {e}")
+                # Notify client before breaking connection
+                try:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": f"Server error: {str(e)}",
+                            "code": "internal_error",
+                        }
+                    )
+                except Exception:
+                    pass
                 break
 
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
+        # Always try to notify the client about the error
         try:
-            await websocket.send_json({"type": "error", "message": str(e)})
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "message": f"Connection error: {str(e)}",
+                    "code": "connection_error",
+                }
+            )
         except Exception:
             pass
 
