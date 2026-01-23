@@ -604,6 +604,55 @@ class VoiceAvatarSession:
             # Expected errors during cancellation (e.g., response already done)
             logger.debug(f"Response cancel (expected): {e}")
 
+    async def _handle_foundry_voice_response(self, transcript: str) -> None:
+        """
+        Handle voice input in turn-based mode with Foundry Agent.
+
+        Gets full RAG+LLM response from Foundry Agent, then sends to VoiceLive
+        for TTS rendering. This ensures context is always available before
+        the response starts.
+
+        Args:
+            transcript: The user's transcribed speech
+        """
+        try:
+            # Get full response from Foundry Agent (blocking call in thread pool)
+            try:
+                response_text = await asyncio.wait_for(
+                    asyncio.to_thread(foundry_agent.process_query, transcript),
+                    timeout=15.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Foundry Agent voice response timed out after 15s")
+                response_text = None
+
+            if response_text:
+                logger.info(f"Foundry Agent voice response: {response_text[:100]}...")
+                # Create assistant message with the pre-generated response
+                if await self._send_with_timeout({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": response_text}],
+                    },
+                }):
+                    # Trigger response to render the assistant message as TTS
+                    await self._send_with_timeout({"type": "response.create"})
+                else:
+                    logger.error("Failed to send Foundry Agent response to VoiceLive")
+            else:
+                # Foundry Agent failed, fall back to VoiceLive's LLM
+                logger.warning("Foundry Agent failed, triggering VoiceLive fallback response")
+                await self._send_with_timeout({"type": "response.create"})
+        except Exception as e:
+            logger.error(f"Error handling Foundry voice response: {e}")
+            # Try to trigger fallback response
+            try:
+                await self._send_with_timeout({"type": "response.create"})
+            except Exception:
+                pass
+
     async def send_avatar_sdp(self, client_sdp: str) -> bool:
         """
         Send client SDP for avatar WebRTC connection.
@@ -751,8 +800,22 @@ class VoiceAvatarSession:
                 self._recent_user_messages.append(transcript)
                 if len(self._recent_user_messages) > 3:
                     self._recent_user_messages.pop(0)
-                # Fire-and-forget RAG context injection (returns immediately, runs in background)
-                await self._inject_rag_context(transcript)
+
+                # In turn-based mode with Foundry Agent, use agent for full RAG+LLM response
+                # This ensures context is always available before response starts
+                if self._turn_based_mode and foundry_agent.enabled:
+                    logger.info("Turn-based mode: Using Foundry Agent for voice response")
+                    # Start background task to get Foundry Agent response and trigger TTS
+                    # This allows event processing to continue while waiting for the agent
+                    task = asyncio.create_task(
+                        self._handle_foundry_voice_response(transcript)
+                    )
+                    self._track_task(task)
+                else:
+                    # Live voice mode: fire-and-forget RAG context injection
+                    # VoiceLive will auto-trigger response via VAD
+                    await self._inject_rag_context(transcript)
+
                 return {
                     "type": "transcript",
                     "role": "user",
