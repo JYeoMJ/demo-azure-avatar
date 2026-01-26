@@ -53,6 +53,7 @@ interface TranscriptMessage {
   role: "user" | "assistant";
   text: string;
   language?: string;
+  thinking?: boolean;
 }
 
 interface TranscriptDeltaMessage {
@@ -158,6 +159,7 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
   const [turnBasedMode, setTurnBasedMode] = useState(false);
   const [microphoneEnabled, setMicrophoneEnabledState] = useState(true);
   const [detectedLanguage, setDetectedLanguage] = useState<string>("EN");
+  const [isThinking, setIsThinking] = useState(false);
 
   // Refs
   const wsRef = useRef<WebSocket | null>(null);
@@ -674,6 +676,7 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
             // Reset streaming transcript and delta buffer on interruption
             streamingDeltasRef.current = [];
             setStreamingTranscript("");
+            setIsThinking(false);  // Clear thinking on user interruption
             setSpeakingState("user");
             break;
 
@@ -681,13 +684,20 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
             setSpeakingState("idle");
             break;
 
+          case "assistant.thinking":
+            // Agent is processing the request
+            setIsThinking(true);
+            break;
+
           case "assistant.response.started":
+            setIsThinking(false);  // Clear thinking when response starts
             setSpeakingState("assistant");
             break;
 
           case "assistant.speaking.done":
           case "assistant.response.done":
           case "assistant.response.cancelled":
+            setIsThinking(false);  // Clear thinking on completion
             setSpeakingState("idle");
             break;
 
@@ -714,6 +724,10 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
           case "transcript":
             // Use type guard for safe access
             if (isTranscriptMessage(data)) {
+              // Check for thinking flag (Foundry Agent processing started)
+              if (data.thinking) {
+                setIsThinking(true);
+              }
               if (data.role === "assistant") {
                 // Finalize assistant transcript - use the authoritative text from server
                 // Reset streaming state and delta buffer
@@ -773,6 +787,7 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
             }
             console.error("Full error data:", data);
             console.error("====================");
+            setIsThinking(false);  // Clear thinking on error
             setStatus("error");
             break;
         }
@@ -1053,6 +1068,7 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
     turnBasedMode,
     microphoneEnabled,
     detectedLanguage,
+    isThinking,
     connect,
     disconnect,
     sendTextMessage,

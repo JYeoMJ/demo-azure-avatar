@@ -923,6 +923,14 @@ class VoiceAvatarSession:
                         self._handle_foundry_voice_response(transcript)
                     )
                     self._track_task(task)
+                    # Return transcript with thinking flag to signal processing started
+                    return {
+                        "type": "transcript",
+                        "role": "user",
+                        "text": transcript,
+                        "language": detected_lang,
+                        "thinking": True,
+                    }
                 else:
                     # Live voice mode: fire-and-forget RAG context injection
                     # VoiceLive will auto-trigger response via VAD
