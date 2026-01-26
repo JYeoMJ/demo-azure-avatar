@@ -55,8 +55,9 @@ class Settings:
     VOICE_NAME: str = os.getenv("VOICE_NAME", "en-US-Ava:DragonHDLatestNeural")
 
     # Input language detection (comma-separated for multi-language auto-detection)
-    # Default: Singapore's four official languages (English, Chinese, Malay, Tamil)
-    INPUT_LANGUAGES: str = os.getenv("INPUT_LANGUAGES", "en,zh,ms,ta")
+    # Default: Singapore's four official languages + Cantonese
+    # en=English, zh=Mandarin, zh-HK=Cantonese, ms=Malay, ta=Tamil
+    INPUT_LANGUAGES: str = os.getenv("INPUT_LANGUAGES", "en,zh,zh-HK,ms,ta")
 
     # Assistant instructions
     ASSISTANT_INSTRUCTIONS: str = os.getenv(
