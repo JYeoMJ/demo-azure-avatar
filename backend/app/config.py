@@ -54,6 +54,25 @@ class Settings:
     # Options: en-US-AvaMultilingualNeural, en-US-Ava:DragonHDLatestNeural (HD)
     VOICE_NAME: str = os.getenv("VOICE_NAME", "en-US-Ava:DragonHDLatestNeural")
 
+    # Per-language voice mappings (native voices for each language)
+    # See: https://learn.microsoft.com/azure/ai-services/speech-service/language-support?tabs=tts
+    VOICE_MAPPING_EN: str = os.getenv("VOICE_MAPPING_EN", "en-US-JennyNeural")
+    VOICE_MAPPING_ZH: str = os.getenv("VOICE_MAPPING_ZH", "zh-CN-XiaoxiaoNeural")
+    VOICE_MAPPING_ZH_HK: str = os.getenv("VOICE_MAPPING_ZH_HK", "zh-HK-HiuMaanNeural")
+    VOICE_MAPPING_MS: str = os.getenv("VOICE_MAPPING_MS", "ms-MY-YasminNeural")
+    VOICE_MAPPING_TA: str = os.getenv("VOICE_MAPPING_TA", "ta-IN-PallaviNeural")
+
+    @property
+    def voice_mappings(self) -> dict[str, str]:
+        """Return mapping of language codes to native voice names."""
+        return {
+            "EN": self.VOICE_MAPPING_EN,
+            "ZH": self.VOICE_MAPPING_ZH,
+            "ZH-HK": self.VOICE_MAPPING_ZH_HK,
+            "MS": self.VOICE_MAPPING_MS,
+            "TA": self.VOICE_MAPPING_TA,
+        }
+
     # Input language detection (comma-separated for multi-language auto-detection)
     # Default: Singapore's four official languages + Cantonese
     # en=English, zh=Mandarin, zh-HK=Cantonese, ms=Malay, ta=Tamil
@@ -69,6 +88,19 @@ class Settings:
 
     # Maximum tokens for assistant response (about 2 sentences)
     MAX_RESPONSE_TOKENS: int = int(os.getenv("MAX_RESPONSE_TOKENS", "100"))
+
+    # Transcription Settings
+    # Models: whisper-1, gpt-4o-transcribe, gpt-4o-mini-transcribe, azure-speech
+    # azure-speech recommended for multilingual (supports Cantonese, phrase lists)
+    TRANSCRIPTION_MODEL: str = os.getenv("TRANSCRIPTION_MODEL", "azure-speech")
+
+    # Phrase list for domain-specific terms (comma-separated)
+    # Helps improve recognition of specific words/phrases (only used with azure-speech)
+    PHRASE_LIST: str = os.getenv("PHRASE_LIST", "")
+
+    # VAD prefix padding (ms) - audio captured before speech starts
+    # Increase if first words are being missed (default: 400)
+    VAD_PREFIX_PADDING_MS: int = int(os.getenv("VAD_PREFIX_PADDING_MS", "400"))
 
     # Turn-based mode: when true, auto-response is disabled and user must explicitly trigger response
     # In live voice mode (false), VAD automatically triggers assistant response after user stops speaking
@@ -101,6 +133,10 @@ class Settings:
             )
         logger.info(f"  Voice: {self.VOICE_NAME}")
         logger.info(f"  Input languages: {self.INPUT_LANGUAGES}")
+        logger.info(f"  Transcription model: {self.TRANSCRIPTION_MODEL}")
+        if self.PHRASE_LIST:
+            logger.info(f"  Phrase list: {self.PHRASE_LIST[:50]}...")
+        logger.info(f"  VAD prefix padding: {self.VAD_PREFIX_PADDING_MS}ms")
         logger.info(
             f"  Video: {self.AVATAR_VIDEO_CODEC} @ {self.AVATAR_VIDEO_BITRATE} bps"
         )

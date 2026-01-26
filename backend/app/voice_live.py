@@ -34,16 +34,30 @@ from .foundry_agent import foundry_agent
 logger = logging.getLogger(__name__)
 
 
+# Cantonese-specific characters (common in Cantonese but rare in Mandarin)
+CANTONESE_MARKERS = set("係嘅喺冇嚟嗰啲咁噉咗乜嘢")
+
+# Common Malay words for detection
+MALAY_INDICATORS = {"saya", "anda", "dia", "kami", "dan", "atau", "yang", "ini", "itu"}
+
+
 def detect_language(text: str) -> str:
-    """Detect language from text using Unicode character ranges."""
+    """Detect language from text using Unicode character ranges and word patterns."""
     if not text:
         return "EN"
+
+    # Check Malay patterns first (Latin script with common Malay words)
+    words = set(text.lower().split())
+    if len(words & MALAY_INDICATORS) >= 2:
+        return "MS"
 
     for char in text:
         code = ord(char)
         # Chinese (CJK Unified Ideographs)
         if 0x4E00 <= code <= 0x9FFF:
-            return "ZH"
+            # Check for Cantonese-specific markers
+            canto_count = sum(1 for c in text if c in CANTONESE_MARKERS)
+            return "ZH-HK" if canto_count >= 2 else "ZH"
         # Tamil
         if 0x0B80 <= code <= 0x0BFF:
             return "TA"
@@ -131,6 +145,8 @@ class VoiceAvatarSession:
         # Session-based Foundry Agent thread management
         self._foundry_thread_id: Optional[str] = None
         self._recent_user_messages: list[str] = []  # Last 3 messages for context
+        # Track current voice for per-language switching
+        self._current_voice: str = settings.VOICE_NAME
         # Initialize Foundry Agent if enabled
         foundry_agent.initialize()
 
@@ -202,7 +218,7 @@ class VoiceAvatarSession:
         # In turn-based mode, disable auto-response so user must explicitly trigger
         turn_detection = AzureSemanticVadMultilingual(
             threshold=0.5,
-            prefix_padding_ms=300,
+            prefix_padding_ms=settings.VAD_PREFIX_PADDING_MS,  # Configurable, default 400ms
             silence_duration_ms=800 if self._turn_based_mode else 500,
             create_response=not self._turn_based_mode,  # Disable auto-response in turn-based mode
             end_of_utterance_detection=eou_detection,
@@ -237,9 +253,15 @@ class VoiceAvatarSession:
 
         # Input transcription with multi-language auto-detection
         # Supports: whisper-1, gpt-4o-transcribe, gpt-4o-mini-transcribe, azure-speech
+        # azure-speech recommended for multilingual (supports Cantonese, phrase lists)
+        phrase_list = None
+        if settings.PHRASE_LIST:
+            phrase_list = [p.strip() for p in settings.PHRASE_LIST.split(",") if p.strip()]
+
         input_transcription = AudioInputTranscriptionOptions(
-            model="whisper-1",
-            language=settings.INPUT_LANGUAGES,  # e.g., "en,zh,ja" for auto-detection
+            model=settings.TRANSCRIPTION_MODEL,
+            language=settings.INPUT_LANGUAGES,  # e.g., "en,zh,zh-HK" for auto-detection
+            phrase_list=phrase_list,  # Only used with azure-speech
         )
 
         # Avatar enabled - requires resource in supported region
@@ -458,7 +480,7 @@ class VoiceAvatarSession:
             turn_detection_config = {
                 "type": "azure_semantic_vad_multilingual",
                 "threshold": 0.5,
-                "prefix_padding_ms": 300,
+                "prefix_padding_ms": settings.VAD_PREFIX_PADDING_MS,
                 "silence_duration_ms": 800 if turn_based else 500,
                 "create_response": not turn_based,
                 "end_of_utterance_detection": {
@@ -485,6 +507,48 @@ class VoiceAvatarSession:
     def is_turn_based_mode(self) -> bool:
         """Return current mode setting."""
         return self._turn_based_mode
+
+    async def _switch_voice_for_language(self, detected_lang: str) -> bool:
+        """
+        Switch TTS voice based on detected language.
+
+        Uses native voices for each language instead of a single multilingual voice.
+        Voice switching is dynamic via session.update (no restart needed).
+
+        Note: When avatar is configured, voice switching is disabled because:
+        1. Azure VoiceLive doesn't allow voice updates via session.update with avatar
+        2. Dragon HD voices (e.g., en-US-Ava:DragonHDLatestNeural) are multilingual
+           and automatically handle multiple languages without switching
+
+        Args:
+            detected_lang: Detected language code (EN, ZH, ZH-HK, MS, TA)
+
+        Returns:
+            True if voice was switched, False if already using correct voice or failed
+        """
+        # Avatar mode doesn't support dynamic voice switching
+        # Dragon HD voices are multilingual and handle language variation automatically
+        if settings.AVATAR_CHARACTER:
+            return False
+
+        voice_mappings = settings.voice_mappings
+        target_voice = voice_mappings.get(detected_lang, settings.VOICE_NAME)
+
+        if target_voice == self._current_voice:
+            return False
+
+        voice_config = {"name": target_voice, "type": "azure-standard"}
+
+        if await self._send_with_timeout({
+            "type": "session.update",
+            "session": {"voice": voice_config}
+        }):
+            self._current_voice = target_voice
+            logger.info(f"Switched voice to {target_voice} for language {detected_lang}")
+            return True
+
+        logger.warning(f"Failed to switch voice to {target_voice}")
+        return False
 
     async def _inject_rag_context_background(self, query: str) -> None:
         """
@@ -801,6 +865,10 @@ class VoiceAvatarSession:
                 if len(self._recent_user_messages) > 3:
                     self._recent_user_messages.pop(0)
 
+                # Detect language and switch voice if needed
+                detected_lang = detect_language(transcript)
+                await self._switch_voice_for_language(detected_lang)
+
                 # In turn-based mode with Foundry Agent, use agent for full RAG+LLM response
                 # This ensures context is always available before response starts
                 if self._turn_based_mode and foundry_agent.enabled:
@@ -820,7 +888,7 @@ class VoiceAvatarSession:
                     "type": "transcript",
                     "role": "user",
                     "text": transcript,
-                    "language": detect_language(transcript),
+                    "language": detected_lang,
                 }
             return None
 
