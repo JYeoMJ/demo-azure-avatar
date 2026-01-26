@@ -76,6 +76,7 @@ def detect_language(text: str) -> str:
 # These typically occur due to race conditions that are inherent to real-time voice interactions
 EXPECTED_ERROR_CODES = {
     "response_cancel_not_active",  # User interrupted after response already completed
+    "conversation_already_has_active_response",  # Overlapping speech events from noise/rapid input
 }
 
 # Rate limit protection: minimum seconds between RAG context retrieval calls
@@ -147,6 +148,9 @@ class VoiceAvatarSession:
         self._recent_user_messages: list[str] = []  # Last 3 messages for context
         # Track current voice for per-language switching
         self._current_voice: str = settings.VOICE_NAME
+        # Guard against concurrent Foundry Agent responses
+        # Prevents "conversation_already_has_active_response" errors from overlapping speech
+        self._foundry_response_pending: bool = False
         # Initialize Foundry Agent if enabled
         foundry_agent.initialize()
 
@@ -163,7 +167,9 @@ class VoiceAvatarSession:
         """Mark session as not ready (thread-safe)."""
         self._session_ready_event.clear()
 
-    async def _send_with_timeout(self, message: dict, timeout: float = SEND_TIMEOUT) -> bool:
+    async def _send_with_timeout(
+        self, message: dict, timeout: float = SEND_TIMEOUT
+    ) -> bool:
         """
         Send a message to VoiceLive with timeout protection.
 
@@ -185,7 +191,9 @@ class VoiceAvatarSession:
             )
             return True
         except asyncio.TimeoutError:
-            logger.error(f"Send timed out after {timeout}s for message type: {message.get('type', 'unknown')}")
+            logger.error(
+                f"Send timed out after {timeout}s for message type: {message.get('type', 'unknown')}"
+            )
             return False
         except Exception as e:
             logger.error(f"Send failed: {e}")
@@ -208,20 +216,23 @@ class VoiceAvatarSession:
         else:
             voice_config = settings.VOICE_NAME
 
-        # Semantic end-of-utterance detection
+        # Semantic end-of-utterance detection (configurable)
         eou_detection = AzureSemanticDetectionMultilingual(
-            threshold_level="medium",
-            timeout_ms=1000,
+            threshold_level=settings.EOU_THRESHOLD_LEVEL,
+            timeout_ms=settings.EOU_TIMEOUT_MS,
         )
 
         # Semantic VAD with multilingual support
         # In turn-based mode, disable auto-response so user must explicitly trigger
+        # Silence duration: use config value for live mode, 800ms for turn-based mode
+        silence_ms = 800 if self._turn_based_mode else settings.VAD_SILENCE_DURATION_MS
         turn_detection = AzureSemanticVadMultilingual(
-            threshold=0.5,
+            threshold=settings.VAD_THRESHOLD,  # Configurable, default 0.6
             prefix_padding_ms=settings.VAD_PREFIX_PADDING_MS,  # Configurable, default 400ms
-            silence_duration_ms=800 if self._turn_based_mode else 500,
+            silence_duration_ms=silence_ms,
             create_response=not self._turn_based_mode,  # Disable auto-response in turn-based mode
             end_of_utterance_detection=eou_detection,
+            remove_filler_words=settings.VAD_REMOVE_FILLER_WORDS,  # Reduce false triggers from "um", "uh"
         )
 
         # Avatar configuration (must match Azure VoiceLive format)
@@ -256,7 +267,9 @@ class VoiceAvatarSession:
         # azure-speech recommended for multilingual (supports Cantonese, phrase lists)
         phrase_list = None
         if settings.PHRASE_LIST:
-            phrase_list = [p.strip() for p in settings.PHRASE_LIST.split(",") if p.strip()]
+            phrase_list = [
+                p.strip() for p in settings.PHRASE_LIST.split(",") if p.strip()
+            ]
 
         input_transcription = AudioInputTranscriptionOptions(
             model=settings.TRANSCRIPTION_MODEL,
@@ -278,7 +291,7 @@ class VoiceAvatarSession:
             max_response_output_tokens=settings.MAX_RESPONSE_TOKENS,
             avatar=avatar_config,
             input_audio_echo_cancellation=AudioEchoCancellation(),
-            input_audio_noise_reduction=AudioNoiseReduction(type="azure_deep_noise_suppression"),
+            input_audio_noise_reduction=AudioNoiseReduction(type=settings.NOISE_REDUCTION_TYPE),
         )
 
     async def connect(self) -> dict:
@@ -477,17 +490,20 @@ class VoiceAvatarSession:
             )
 
             # Update session turn detection configuration
+            # Silence duration: use config value for live mode, 800ms for turn-based mode
+            silence_ms = 800 if turn_based else settings.VAD_SILENCE_DURATION_MS
             turn_detection_config = {
                 "type": "azure_semantic_vad_multilingual",
-                "threshold": 0.5,
+                "threshold": settings.VAD_THRESHOLD,
                 "prefix_padding_ms": settings.VAD_PREFIX_PADDING_MS,
-                "silence_duration_ms": 800 if turn_based else 500,
+                "silence_duration_ms": silence_ms,
                 "create_response": not turn_based,
                 "end_of_utterance_detection": {
                     "type": "azure_semantic_detection_multilingual",
-                    "threshold_level": "medium",
-                    "timeout_ms": 1000,
+                    "threshold_level": settings.EOU_THRESHOLD_LEVEL,
+                    "timeout_ms": settings.EOU_TIMEOUT_MS,
                 },
+                "remove_filler_words": settings.VAD_REMOVE_FILLER_WORDS,
             }
 
             if not await self._send_with_timeout(
@@ -539,12 +555,13 @@ class VoiceAvatarSession:
 
         voice_config = {"name": target_voice, "type": "azure-standard"}
 
-        if await self._send_with_timeout({
-            "type": "session.update",
-            "session": {"voice": voice_config}
-        }):
+        if await self._send_with_timeout(
+            {"type": "session.update", "session": {"voice": voice_config}}
+        ):
             self._current_voice = target_voice
-            logger.info(f"Switched voice to {target_voice} for language {detected_lang}")
+            logger.info(
+                f"Switched voice to {target_voice} for language {detected_lang}"
+            )
             return True
 
         logger.warning(f"Failed to switch voice to {target_voice}")
@@ -693,21 +710,25 @@ class VoiceAvatarSession:
             if response_text:
                 logger.info(f"Foundry Agent voice response: {response_text[:100]}...")
                 # Create assistant message with the pre-generated response
-                if await self._send_with_timeout({
-                    "type": "conversation.item.create",
-                    "item": {
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": response_text}],
-                    },
-                }):
+                if await self._send_with_timeout(
+                    {
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": response_text}],
+                        },
+                    }
+                ):
                     # Trigger response to render the assistant message as TTS
                     await self._send_with_timeout({"type": "response.create"})
                 else:
                     logger.error("Failed to send Foundry Agent response to VoiceLive")
             else:
                 # Foundry Agent failed, fall back to VoiceLive's LLM
-                logger.warning("Foundry Agent failed, triggering VoiceLive fallback response")
+                logger.warning(
+                    "Foundry Agent failed, triggering VoiceLive fallback response"
+                )
                 await self._send_with_timeout({"type": "response.create"})
         except Exception as e:
             logger.error(f"Error handling Foundry voice response: {e}")
@@ -716,6 +737,10 @@ class VoiceAvatarSession:
                 await self._send_with_timeout({"type": "response.create"})
             except Exception:
                 pass
+        finally:
+            # Always clear the pending flag when done (success or failure)
+            self._foundry_response_pending = False
+            logger.debug("Foundry response pending flag cleared")
 
     async def send_avatar_sdp(self, client_sdp: str) -> bool:
         """
@@ -872,7 +897,26 @@ class VoiceAvatarSession:
                 # In turn-based mode with Foundry Agent, use agent for full RAG+LLM response
                 # This ensures context is always available before response starts
                 if self._turn_based_mode and foundry_agent.enabled:
-                    logger.info("Turn-based mode: Using Foundry Agent for voice response")
+                    # Guard: Skip if a Foundry response is already being processed
+                    # This prevents "conversation_already_has_active_response" errors
+                    # when background noise triggers multiple speech events
+                    if self._foundry_response_pending:
+                        logger.warning(
+                            "Skipping transcript: Foundry response already pending "
+                            f"(transcript: {transcript[:50]}...)"
+                        )
+                        return {
+                            "type": "transcript",
+                            "role": "user",
+                            "text": transcript,
+                            "language": detected_lang,
+                        }
+
+                    logger.info(
+                        "Turn-based mode: Using Foundry Agent for voice response"
+                    )
+                    # Mark response as pending before starting task
+                    self._foundry_response_pending = True
                     # Start background task to get Foundry Agent response and trigger TTS
                     # This allows event processing to continue while waiting for the agent
                     task = asyncio.create_task(

@@ -131,6 +131,12 @@ function isErrorMessage(data: unknown): data is ErrorMessage {
 const DEFAULT_WS_URL =
   process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws/voice-avatar";
 
+// Error codes that are recoverable - don't freeze UI on these
+const RECOVERABLE_ERROR_CODES = new Set([
+  "conversation_already_has_active_response",
+  "response_cancel_not_active",
+]);
+
 // Timeout constants for stability
 const WS_CONNECT_TIMEOUT_MS = 15000; // 15 seconds for WebSocket connection
 const ICE_GATHERING_TIMEOUT_MS = 3000; // 3 seconds for ICE gathering (don't wait for complete)
@@ -755,6 +761,14 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
               if (data.code) {
                 console.error("Code:", data.code);
               }
+
+              // Check if error is recoverable - don't freeze UI
+              if (data.code && RECOVERABLE_ERROR_CODES.has(data.code)) {
+                console.warn("Recoverable error, continuing session:", data.code);
+                console.error("====================");
+                break;  // Don't change status, session remains connected
+              }
+
               onError?.(data.message);
             }
             console.error("Full error data:", data);
