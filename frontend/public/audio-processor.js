@@ -12,8 +12,9 @@
 class PCMProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    // Buffer to accumulate samples (128 samples per process() call is too small)
-    this.buffer = new Float32Array(4096);
+    // Buffer to accumulate samples - 1200 samples = 50ms at 24kHz (matches reference SDK)
+    // Smaller chunks reduce latency and create smoother network traffic patterns
+    this.buffer = new Float32Array(1200);
     this.bufferIndex = 0;
   }
 

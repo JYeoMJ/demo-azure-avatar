@@ -140,6 +140,8 @@ export default function AvatarPanel({
             ref={videoRef}
             autoPlay
             playsInline
+            muted={false}
+            preload="auto"
             className="w-full h-full object-contain"
             style={{ backgroundColor: "#C8D8F0" }}
             aria-label="AI Avatar video stream"

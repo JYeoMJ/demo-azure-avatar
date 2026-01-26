@@ -175,6 +175,8 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
   const streamingDeltasRef = useRef<string[]>([]);
   // WebRTC recovery timeout for handling "disconnected" state
   const webrtcRecoveryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // WebRTC stats monitoring interval
+  const webrtcStatsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Cleanup function
   const cleanup = useCallback(() => {
@@ -182,6 +184,12 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
     if (webrtcRecoveryTimeoutRef.current) {
       clearTimeout(webrtcRecoveryTimeoutRef.current);
       webrtcRecoveryTimeoutRef.current = null;
+    }
+
+    // Clear WebRTC stats monitoring interval
+    if (webrtcStatsIntervalRef.current) {
+      clearInterval(webrtcStatsIntervalRef.current);
+      webrtcStatsIntervalRef.current = null;
     }
 
     // Stop audio processing
@@ -363,6 +371,34 @@ export function useVoiceAvatar(options: UseVoiceAvatarOptions = {}) {
       } else if (pc.connectionState === "connected") {
         console.log("WebRTC connection established");
         setAvatarStatus("connected");
+
+        // Start WebRTC stats monitoring for diagnostics
+        if (webrtcStatsIntervalRef.current) {
+          clearInterval(webrtcStatsIntervalRef.current);
+        }
+        webrtcStatsIntervalRef.current = setInterval(async () => {
+          if (!peerConnectionRef.current) return;
+          try {
+            const stats = await peerConnectionRef.current.getStats();
+            stats.forEach((report) => {
+              if (report.type === "inbound-rtp" && report.kind === "video") {
+                const framesDecoded = report.framesDecoded || 0;
+                const framesDropped = report.framesDropped || 0;
+                const packetsLost = report.packetsLost || 0;
+                const jitterBufferDelay = report.jitterBufferDelay || 0;
+                const jitterBufferEmittedCount = report.jitterBufferEmittedCount || 1;
+                const avgJitterDelay = jitterBufferDelay / jitterBufferEmittedCount * 1000;
+
+                // Only log if there are issues or periodically for monitoring
+                if (framesDropped > 0 || packetsLost > 0) {
+                  console.log(`[WebRTC Stats] Video: decoded=${framesDecoded}, dropped=${framesDropped}, packetsLost=${packetsLost}, avgJitter=${avgJitterDelay.toFixed(1)}ms`);
+                }
+              }
+            });
+          } catch (e) {
+            // Ignore stats errors
+          }
+        }, 5000); // Check every 5 seconds
       }
     };
 
