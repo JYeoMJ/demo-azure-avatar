@@ -170,7 +170,7 @@ async def voice_avatar_websocket(websocket: WebSocket):
 
     session = VoiceAvatarSession()
     event_task = None
-    rate_limiter = RateLimiter(max_messages=100, window_seconds=1.0)
+    rate_limiter = RateLimiter(max_messages=200, window_seconds=1.0)
     audio_chunk_count = 0  # Per-connection counter (not global)
 
     try:
@@ -198,6 +198,11 @@ async def voice_avatar_websocket(websocket: WebSocket):
                 )
 
                 # Rate limiting - check AFTER receiving the message
+                # Debug: log message rate when approaching limit
+                msg_count = len(rate_limiter.messages)
+                if msg_count > 100:  # Only log when approaching limit
+                    logger.debug(f"Rate limiter: {msg_count} messages in window")
+
                 if not rate_limiter.allow():
                     logger.warning("Rate limit exceeded for client")
                     await websocket.send_json(
